@@ -1,0 +1,461 @@
+{
+  "name": "92-util-tool-gateway",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "gw-trigger",
+      "name": "Gateway Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "notes": "REAL Tool Gateway. Providers: SerpAPI Google Shopping (primary commercial) + Tavily (web research/evidence). eBay nodes are INACTIVE (NOT REQUIRED, kept for audit history; activate only with EBAY_ENABLED=true + creds). Missing creds -> UNAVAILABLE retryable:false. Amazon/Flipkart filtered. SerpAPI key via $env.SERPAPI_API_KEY (compose) or query-auth credential. Input: {tool, query|url|serpapi_product_id, max_results}. Output: envelopes."
+      },
+      "id": "gw-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        240,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Route + validate gateway request. No LLM here.\nconst b = $input.first().json;\nconst tool = b.tool;\nconst allowed = ['web-search','product-search','product-details','vendor-search','price-retrieval'];\nif (!allowed.includes(tool)) throw new Error('Unknown tool: ' + tool + '. Allowed: ' + allowed.join(','));\nif (['web-search','product-search','vendor-search'].includes(tool) && !(b.query && String(b.query).trim()) && !b.serpapi_product_id) throw new Error(tool + ' requires query or serpapi_product_id');\nif (tool === 'product-details' && !(b.url || b.serpapi_product_id)) throw new Error('product-details requires url or serpapi_product_id');\nreturn [{ tool, query: b.query ?? null, url: b.url ?? null, serpapi_product_id: b.serpapi_product_id ?? null, max_results: Math.min(b.max_results ?? 8, 20) }];"
+      },
+      "id": "gw-validate",
+      "name": "Validate Gateway Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tool }}",
+                    "rightValue": "web-search",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "web"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tool }}",
+                    "rightValue": "product-search",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "products"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tool }}",
+                    "rightValue": "product-details",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "details"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tool }}",
+                    "rightValue": "vendor-search",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "vendors"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tool }}",
+                    "rightValue": "price-retrieval",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "prices"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unsupported"
+        }
+      },
+      "id": "gw-switch",
+      "name": "Switch by Tool",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.tavily.com/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.TAVILY_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"query\": \"{{ $json.query }}\", \"max_results\": {{ $json.max_results }}, \"search_depth\": \"basic\", \"include_answer\": false}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "gw-tavily",
+      "name": "Tavily Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        140
+      ],
+      "credentials": {},
+      "notes": "Key via $env.TAVILY_API_KEY (compose passthrough). Credential alternative documented in README."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.ebay.com/identity/v1/oauth2/token",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "grant_type",
+              "value": "client_credentials"
+            },
+            {
+              "name": "scope",
+              "value": "https://api.ebay.com/api_scope/browse"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "gw-ebay-auth",
+      "name": "eBay OAuth Token [INACTIVE]",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        340
+      ],
+      "credentials": {},
+      "notes": "INACTIVE: eBay is NOT REQUIRED. Disconnected. Keep for audit history only; reactivate with EBAY_ENABLED=true + HTTP Basic Auth (EBAY_APP_ID/EBAY_CERT_ID)."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://serpapi.com/search.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google_shopping"
+            },
+            {
+              "name": "q",
+              "value": "={{ $json.query }}"
+            },
+            {
+              "name": "num",
+              "value": "={{ $json.max_results }}"
+            },
+            {
+              "name": "gl",
+              "value": "in"
+            },
+            {
+              "name": "hl",
+              "value": "en"
+            },
+            {
+              "name": "api_key",
+              "value": "={{ $env.SERPAPI_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "gw-serpapi",
+      "name": "SerpAPI Shopping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        140
+      ],
+      "credentials": {},
+      "notes": "Primary commercial source. Key via $env.SERPAPI_API_KEY (compose passthrough) or replace with query-auth credential. 401/403 = credential problem (no retry); 429/5xx = retryable."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.ebay.com/buy/browse/v1/item_summary/search?q={{ $json.query }}&limit=20",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-EBAY-C-MARKETPLACE-ID",
+              "value": "EBAY_US"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "gw-ebay-search",
+      "name": "eBay Browse Search [INACTIVE]",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1140,
+        340
+      ],
+      "credentials": {},
+      "notes": "INACTIVE with eBay OAuth Token. Kept for audit history. If OAuth fails -> UNAVAILABLE, never fake."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.tavily.com/extract",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.TAVILY_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"urls\": [\"{{ $json.url }}\"], \"query\": \"specifications warranty delivery payment terms price\", \"extract_depth\": \"basic\"}",
+        "options": {
+          "timeout": 25000
+        }
+      },
+      "id": "gw-extract",
+      "name": "Tavily Extract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        540
+      ],
+      "credentials": {},
+      "notes": "Key via $env.TAVILY_API_KEY (compose passthrough). Credential alternative documented in README."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize ANY provider response into BuyWise envelopes. Filter Amazon/Flipkart. No mocks.\nconst now = new Date().toISOString();\nconst EXCL = ['amazon.', 'flipkart.'];\nconst excluded = (u) => EXCL.some((h) => String(u || '').toLowerCase().includes(h));\nconst items = $input.all().map((i) => i.json);\nconst env = (source, source_url, data, confidence) => ({ source, source_url, retrieved_at: now, data_status: data && Object.values(data).some((v) => v === 'unavailable') ? 'PARTIAL' : 'LIVE', confidence, data, error: null, retryable: false });\nconst unav = (source, error, retryable = true) => ({ source, source_url: null, retrieved_at: now, data_status: 'UNAVAILABLE', confidence: 0, data: null, error: String(error), retryable });\nconst out = [];\nfor (const it of items) {\n  if (it?.shopping_results) {\n      for (const s of it.shopping_results.filter((x) => (x?.link || x?.product_link) && !excluded(x.link || x.product_link))) {\n        const filled = [s.title, s.source, s.price, s.rating].filter((v) => v !== undefined && v !== null).length;\n        out.push({ source: 'serpapi_shopping', source_url: String(s.link || s.product_link || '').replace(/ /g, '%20'), /*ENC-SERPI*/ retrieved_at: now, data_status: filled >= 3 ? 'LIVE' : 'PARTIAL', confidence: Math.min(0.5 + filled * 0.07, 0.9), data: { product_name: s.title ?? 'unavailable', merchant_name: s.source ?? 'unavailable', price: s.price ?? 'unavailable', currency: 'unavailable', rating: typeof s.rating === 'number' ? s.rating : 'unavailable', review_count: Number.isInteger(s.reviews) ? s.reviews : 'unavailable', serpapi_product_id: s.product_id ?? 'unavailable' }, error: null, retryable: false });\n      }\n    } else if (it?.results) { for (const r of it.results.filter((x) => x?.url && !excluded(x.url))) out.push(env('tavily_search', r.url, { title: r.title ?? 'unavailable', snippet: r.content ?? 'unavailable' }, 0.65)); }\n  else if (it?.itemSummaries) { for (const s of it.itemSummaries.filter((x) => x?.itemWebUrl && !excluded(x.itemWebUrl))) out.push(env('ebay_browse_api', s.itemWebUrl, { title: s.title ?? 'unavailable', itemId: s.itemId ?? 'unavailable', price: s.price?.value ?? 'unavailable', currency: s.price?.currency ?? 'unavailable', condition: s.condition ?? 'unavailable', seller: s.seller?.username ?? 'unavailable' }, 0.85)); }\n  else if (it?.title || it?.price) { if (!excluded(it.itemWebUrl)) out.push(env('ebay_browse_api', it.itemWebUrl ?? null, { title: it.title ?? 'unavailable', price: it.price?.value ?? 'unavailable', currency: it.price?.currency ?? 'unavailable' }, 0.9)); }\n  else if (it?.error || it?.statusCode >= 400) { out.push(unav('provider', it.error ?? ('HTTP ' + it.statusCode), true)); }\n}\nif (!out.length) return [{ json: unav('tool-gateway', 'No verifiable (non-excluded) results from configured providers', false) }];\nreturn out.map((e) => ({ json: e }));"
+      },
+      "id": "gw-envelope",
+      "name": "Normalize to Envelopes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1380,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Gateway Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Gateway Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Gateway Request": {
+      "main": [
+        [
+          {
+            "node": "Switch by Tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch by Tool": {
+      "main": [
+        [
+          {
+            "node": "Tavily Search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SerpAPI Shopping",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tavily Extract",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SerpAPI Shopping",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SerpAPI Shopping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tavily Search": {
+      "main": [
+        [
+          {
+            "node": "Normalize to Envelopes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SerpAPI Shopping": {
+      "main": [
+        [
+          {
+            "node": "Normalize to Envelopes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tavily Extract": {
+      "main": [
+        [
+          {
+            "node": "Normalize to Envelopes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

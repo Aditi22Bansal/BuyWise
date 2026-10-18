@@ -1,0 +1,36 @@
+{
+  "_fixture_note": "TEST FIXTURE — NOT PRODUCTION DATA. Synthetic SerpAPI-shaped payloads for unit tests. Never LIVE, never inserted into PostgreSQL.",
+  "full_item": {
+    "title": "Lenovo ThinkPad T14 Gen 4 16GB 512GB", "link": "https://www.shop.example/p/thinkpad-t14",
+    "price": "₹78,500", "source": "ShopExample", "rating": 4.4, "reviews": 212,
+    "product_id": "123456789", "thumbnail": "https://img.example/t.jpg", "delivery": "Free delivery"
+  },
+  "no_merchant": {
+    "title": "Business Laptop 16GB", "link": "https://www.shop.example/p/x2", "price": "$1,199.00",
+    "rating": 4.0, "reviews": 30, "product_id": "222"
+  },
+  "no_price": {
+    "title": "Business Laptop 16GB", "link": "https://www.shop.example/p/x3", "source": "ShopExample",
+    "rating": 4.0, "reviews": 30, "product_id": "333"
+  },
+  "no_symbol_price": {
+    "title": "Business Laptop 16GB", "link": "https://www.shop.example/p/x4", "source": "ShopExample",
+    "price": "78500", "product_id": "444"
+  },
+  "range_price": {
+    "title": "Business Laptop 16GB", "link": "https://www.shop.example/p/x5", "source": "ShopExample",
+    "price": "Starting from ₹70,000", "product_id": "555"
+  },
+  "excluded_host": {
+    "title": "Laptop", "link": "https://www.amazon.in/dp/X", "source": "Amazon", "price": "₹70,000"
+  },
+  "bad_rating": {
+    "title": "Laptop", "link": "https://www.shop.example/p/x6", "source": "ShopExample",
+    "price": "₹70,000", "rating": 9.5, "reviews": -3
+  },
+  "seller_full": {
+    "name": "ShopExample", "link": "https://www.shop.example/buy/t14", "total_price": "₹76,900", "shipping": "Free shipping"
+  },
+  "seller_no_price": { "name": "OtherStore", "link": "https://other.example/buy/t14" },
+  "seller_no_name": { "link": "https://other.example/buy/t14", "total_price": "₹77,000" }
+}

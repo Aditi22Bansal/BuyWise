@@ -1,0 +1,224 @@
+{
+  "name": "80-agent-reevaluation",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "re-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "notes": "Deterministic re-evaluation. Scores ONLY via 60-util-scoring-engine (called twice: original + revised). No vendor response -> WAITING_FOR_VENDOR (no rows, no transition). No LLM anywhere by design. Canonical logic: tools/_lib/reevaluation.js."
+      },
+      "id": "re-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gate + validate. REAL: response must be a REAL vendor communication (email/vendor_api/vendor_portal) with price+currency+timestamp+evidence. DEMO: explicitly labeled human input (mode=DEMO, channel=demo, DEMO_HUMAN_ENTERED) with verified identities + explicit price; REAL validation untouched.\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nif (!i.negotiation) return [{ json: { procurement_id: i.procurement_id, status: 'NOT_ELIGIBLE', reason: 'no negotiation exists', negotiation_id: null } }];\nconst demo = i.mode === 'DEMO' && i.vendor_response?.channel === 'demo' && i.vendor_response?.response_mode === 'DEMO_HUMAN_ENTERED';\nif (demo) {\n  const r = i.vendor_response, bad = [];\n  if (!i.offer?.offer_id) bad.push('offer identity unverifiable');\n  if (!i.vendor?.vendor_id || !i.vendor?.vendor_name || i.vendor.vendor_name === 'unavailable') bad.push('vendor identity unverifiable');\n  if (!i.product?.product_id) bad.push('product identity unverifiable');\n  if (!(typeof r.revised_price === 'number' && r.revised_price > 0)) bad.push('demo revised price must be explicitly entered (> 0)');\n  if (!r.currency) bad.push('demo currency missing');\n  if (i.offer?.currency && String(r.currency).toUpperCase() !== String(i.offer.currency).toUpperCase()) bad.push('demo currency must match offer (no conversion)');\n  if (bad.length) throw new Error('demo response rejected: ' + bad.join('; '));\n  return [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, mode: 'DEMO', negotiation: i.negotiation, offer: i.offer, vendor: i.vendor, product: i.product, vendor_response: { ...r, currency: String(r.currency).toUpperCase(), received_at: r.received_at ?? new Date().toISOString(), source: 'LOCAL_DEMO_INPUT', vendor_response_verified: false }, original: i.original, weights: i.weights } }];\n}\nif (i.vendor_response?.channel === 'demo') throw new Error('demo response in REAL mode');\nif (!i.vendor_response || typeof i.vendor_response !== 'object' || !(typeof i.vendor_response.revised_price === 'number')) return [{ json: { procurement_id: i.procurement_id, negotiation_id: i.negotiation.negotiation_id ?? null, status: 'WAITING_FOR_VENDOR', reason: 'no verified vendor response' } }];\nconst r = i.vendor_response, bad = [];\nif (!i.offer?.offer_id) bad.push('offer identity unverifiable');\nif (!i.vendor?.vendor_id || !i.vendor?.vendor_name || i.vendor.vendor_name === 'unavailable') bad.push('vendor identity unverifiable');\nif (!i.product?.product_id) bad.push('product identity unverifiable');\nif (r.vendor_id && r.vendor_id !== i.vendor.vendor_id) bad.push('response vendor mismatch');\nif (r.offer_id && r.offer_id !== i.offer.offer_id) bad.push('response offer mismatch');\nif (!(typeof r.revised_price === 'number' && r.revised_price > 0)) bad.push('malformed revised price');\nif (!r.currency) bad.push('revised currency missing');\nif (!r.received_at) bad.push('response timestamp missing');\nif (!r.source || !r.source_url) bad.push('evidence source missing');\nif (!['email','vendor_api','vendor_portal'].includes(r.channel)) bad.push('untraceable response channel');\nif (bad.length) throw new Error('vendor response rejected: ' + bad.join('; '));\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, mode: 'REAL', negotiation: i.negotiation, offer: i.offer, vendor: i.vendor, product: i.product, vendor_response: r, original: i.original, weights: i.weights } }];"
+      },
+      "id": "re-validate",
+      "name": "Gate & Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "operator": {
+                "type": "string",
+                "operation": "isEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "re-blocked",
+      "name": "Blocked?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        620,
+        340
+      ],
+      "notes": "No status field = validated input, proceed. NOT_ELIGIBLE / WAITING_FOR_VENDOR exit via empty branch with no rows and no transition."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass ORIGINAL components to the scoring engine (first of two reuse calls).\nconst i = $input.first().json;\nreturn [{ json: { components: i.original.components ?? {}, weights: i.weights ?? {} } }];"
+      },
+      "id": "re-orig",
+      "name": "Original Components",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "60-util-scoring-engine",
+        "mode": "each"
+      },
+      "id": "re-score1",
+      "name": "Score Original",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1040,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build REVISED components: only price-driven criteria may change (budget_compliance from verified revised price, same currency only).\nconst orig = $('Original Components').first().json;\nconst gated = $('Gate & Validate').first().json;\nconst r = gated.vendor_response, o = gated.original;\nconst comps = { ...(orig.components || {}) };\nconst ccyOk = r.currency && o.currency && String(r.currency).toUpperCase() === String(o.currency).toUpperCase();\nif (typeof r.revised_price === 'number' && ccyOk && typeof o.budget === 'number' && o.budget > 0) comps.budget_compliance = r.revised_price <= o.budget ? 1 : 0;\nelse if (!ccyOk) comps.budget_compliance = null;\nreturn [{ json: { components: comps, weights: orig.weights ?? {} } }];"
+      },
+      "id": "re-rev",
+      "name": "Revised Components",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "60-util-scoring-engine",
+        "mode": "each"
+      },
+      "id": "re-score2",
+      "name": "Score Revised",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Assemble output: deltas + savings (two real same-currency prices only) + changed criteria.\nconst before = $('Score Original').first().json;\nconst after = $input.first().json;\nconst gated = $('Gate & Validate').first().json;\nconst r = gated.vendor_response, o = gated.original;\nconst changed = Object.keys(after.breakdown || {}).filter((k) => JSON.stringify((before.breakdown || {})[k]) !== JSON.stringify(after.breakdown[k]));\nconst ccyOk = r.currency && o.currency && String(r.currency).toUpperCase() === String(o.currency).toUpperCase();\nconst op = (typeof o.price === 'number' && o.price > 0) ? o.price : null;\nconst rp = (typeof r.revised_price === 'number' && r.revised_price > 0) ? r.revised_price : null;\nconst sav = (op !== null && rp !== null && ccyOk) ? { a: Math.round((op - rp) * 100) / 100, p: Math.round((op - rp) / op * 10000) / 100 } : { a: 'unavailable', p: 'unavailable' };\nconst delta = (before.overall_score === null || after.overall_score === null) ? null : Math.round((after.overall_score - before.overall_score) * 10000) / 10000;\nconst ev = [r.source_url].concat(gated.product?.evidence_urls ?? []).filter(Boolean);\nreturn [{ json: { procurement_id: gated.procurement_id, negotiation_id: gated.negotiation.negotiation_id, product_id: gated.product.product_id, vendor_id: gated.vendor.vendor_id, offer_id: gated.offer.offer_id, original_score: before.overall_score ?? null, revised_score: after.overall_score ?? null, score_delta: delta, original_price: op !== null ? op : 'unavailable', revised_price: rp !== null ? rp : 'unavailable', currency: o.currency ?? r.currency ?? null, absolute_savings: sav.a, percentage_savings: sav.p, criteria_changed: changed, criteria_used: after.criteria_used ?? [], criteria_missing: after.criteria_missing ?? [], evidence_urls: [...new Set(ev)], status: 'REEVALUATED', mode: gated.mode ?? 'REAL', response_mode: gated.mode === 'DEMO' ? 'DEMO_HUMAN_ENTERED' : undefined, created_at: new Date().toISOString() } }];"
+      },
+      "id": "re-output",
+      "name": "Assemble Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Gate & Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gate & Validate": {
+      "main": [
+        [
+          {
+            "node": "Blocked?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Blocked?": {
+      "main": [
+        [
+          {
+            "node": "Original Components",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Original Components": {
+      "main": [
+        [
+          {
+            "node": "Score Original",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Original": {
+      "main": [
+        [
+          {
+            "node": "Revised Components",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Revised Components": {
+      "main": [
+        [
+          {
+            "node": "Score Revised",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Revised": {
+      "main": [
+        [
+          {
+            "node": "Assemble Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

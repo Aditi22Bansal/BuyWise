@@ -1,0 +1,201 @@
+{
+  "name": "65-agent-decision",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "dc-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate decision input. Ranked comparisons required; offers/vendors may be empty (\u2192 INSUFFICIENT_DATA, never invented).\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nif (!i.procurement) throw new Error('Missing procurement record');\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, procurement: i.procurement, ranked: i.ranked ?? [], offersByProduct: i.offersByProduct ?? {}, vendorsById: i.vendorsById ?? {}, productsById: i.productsById ?? {}, mandatory: i.mandatory ?? {} } }];"
+      },
+      "id": "dc-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// DETERMINISTIC gates (canonical: tools/_lib/decision.js). Scans ranks in order; NOTHING invented.\n// Unverified mandatory specs block; verified violations skip the candidate; no offers/prices/contact -> INSUFFICIENT_DATA.\nconst inp = $input.first().json;\nconst num = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : null);\nconst isMissing = (v) => v === null || v === undefined || (typeof v === 'string' && (v.trim().toLowerCase() === 'unavailable' || v.trim() === ''));\nconst explain = (decision, row, reason, blocking, offer) => ({ decision, product_id: row ? row.product_id : null, comparison_id: row && row.comparison_id ? row.comparison_id : null, decision_reason: reason, blocking_reasons: blocking, criteria_used: (row && row.criteria_used) || [], criteria_missing: (row && row.criteria_missing) || [], evidence_urls: (row && row.evidence_urls) || [], _offer: offer ? { offer_id: offer.offer_id, vendor_id: offer.vendor_id, net_price: offer.net_price, currency: offer.currency } : null });\nconst mandatoryFailed = (specs, mandatory) => { const failed = [], unver = []; const lower = Object.fromEntries(Object.entries(specs || {}).map(([k, v]) => [String(k).toLowerCase(), v])); for (const [f, rule] of Object.entries(mandatory || {})) { const v = lower[f.toLowerCase()]; if (isMissing(v)) { unver.push(f); continue; } if (rule && typeof rule.min === 'number' && num(v) !== null && num(v) < rule.min) failed.push(f + '=' + v + ' below minimum ' + rule.min); if (rule && typeof rule.max === 'number' && num(v) !== null && num(v) > rule.max) failed.push(f + '=' + v + ' above maximum ' + rule.max); } return { failed, unver }; };\nconst { procurement, ranked, offersByProduct, vendorsById, productsById, mandatory } = inp;\nif (!ranked.length) return [{ json: { procurement_id: inp.procurement_id, decision: 'INSUFFICIENT_DATA', product_id: null, comparison_id: null, decision_reason: 'No ranked candidates available for decision.', blocking_reasons: ['no ranked candidates'], criteria_used: [], criteria_missing: [], evidence_urls: [] } }];\nconst caseCcy = procurement.currency ? String(procurement.currency).toUpperCase() : null;\nconst budget = num(procurement.budget);\nlet rank1 = null, rank1blocking = null, blockedOthers = 0;\nfor (const row of ranked) {\n  const product = productsById[row.product_id] || {};\n  const blocking = [];\n  if (row.overall_score === null || row.overall_score === undefined) blocking.push('no scoring basis (overall_score null)');\n  const mc = mandatoryFailed(product.specifications, mandatory);\n  if (mc.failed.length) { if (row.rank === 1) { rank1 = row; rank1blocking = mc.failed.map((f) => 'mandatory_failed:' + f); } else blockedOthers++; continue; }\n  if (mc.unver.length) blocking.push(...mc.unver.map((f) => 'mandatory_unverifiable:' + f));\n  const offers = (offersByProduct[row.product_id] || []).filter((o) => num(o.net_price) !== null && num(o.net_price) > 0 && o.currency);\n  const sameCcy = caseCcy ? offers.filter((o) => String(o.currency).toUpperCase() === caseCcy) : [];\n  if (!offers.length) blocking.push('no verified offers');\n  else if (caseCcy && !sameCcy.length) blocking.push('no currency-compatible offer (no FX source)');\n  const withContact = sameCcy.filter((o) => vendorsById[o.vendor_id] && vendorsById[o.vendor_id].contact_channel && vendorsById[o.vendor_id].contact_channel.status !== 'UNAVAILABLE');\n  if (offers.length && !withContact.length) blocking.push('no vendor contact channel');\n  if (blocking.length) {\n    if (row.rank === 1) { rank1 = row; rank1blocking = blocking; }\n    else blockedOthers++;\n    continue;\n  }\n  const best = Math.min(...sameCcy.map((o) => o.net_price));\n  const bestOffer = sameCcy.find((o) => o.net_price === best);\n  const qty = (Number.isInteger(procurement.quantity) && procurement.quantity > 0) ? procurement.quantity : null; const totalEst = (qty !== null) ? best * qty : null; if (budget !== null && qty !== null && totalEst !== null && totalEst > budget) return [{ json: { procurement_id: inp.procurement_id, ...explain('NEGOTIATE', row, 'Verified total estimate ' + totalEst + ' ' + caseCcy + ' (unit ' + best + ' x ' + qty + ') exceeds total budget ' + budget + ' ' + caseCcy + '; a real vendor channel exists, negotiation is legitimate.', [], bestOffer) } }];\n  return [{ json: { procurement_id: inp.procurement_id, ...explain('PROCEED', row, 'Sufficient verified evidence; best verified price ' + best + ' ' + caseCcy + (budget !== null ? ' within budget ' + budget + ' ' + caseCcy : '') + '; no blocking issue.', [], bestOffer) } }];\n}\nconst top = rank1 || ranked[0];\nconst blockingFinal = [...(rank1blocking || ['no candidate clears gates']), ...(blockedOthers ? [blockedOthers + ' lower-ranked candidate(s) also blocked'] : [])];\nreturn [{ json: { procurement_id: inp.procurement_id, ...explain('INSUFFICIENT_DATA', top, rank1blocking ? 'Top candidate cannot support a reliable decision: ' + rank1blocking.join('; ') + '.' : 'No ranked candidate clears mandatory and evidence gates.', blockingFinal) } }];"
+      },
+      "id": "dc-gates",
+      "name": "Deterministic Gates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $env.LLM_AVAILABLE || 'false' }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "dc-llmgate",
+      "name": "LLM Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        840,
+        340
+      ],
+      "notes": "LLM wording help only; gates above are authoritative. Skipped while Ollama unavailable."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Rephrase this procurement decision reason in plain language without adding or changing any facts: {{ JSON.stringify($json) }}. Policy: prompts/decision.system.md.",
+        "options": {
+          "systemMessage": "You explain procurement decisions. Never invent facts, never change PROCEED/NEGOTIATE/INSUFFICIENT_DATA. Policy in prompts/decision.system.md."
+        }
+      },
+      "id": "dc-agent",
+      "name": "Decision Agent (LLM, optional)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        1060,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "model": "={{ $env.LLM_MODEL }}",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "dc-ollama",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        420
+      ],
+      "credentials": {},
+      "notes": "Future use only. Skipped while LLM_AVAILABLE != true."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enforce decision-output schema: enum, reason present, traceable evidence.\nconst o = $input.first().json?.output ?? $input.first().json;\nif (!['PROCEED','NEGOTIATE','INSUFFICIENT_DATA'].includes(o.decision)) throw new Error('bad decision: ' + o.decision);\nif (!o.decision_reason) throw new Error('missing decision_reason');\nif (!Array.isArray(o.blocking_reasons)) throw new Error('blocking_reasons must be array');\nreturn [{ json: { procurement_id: o.procurement_id, product_id: o.product_id ?? null, comparison_id: o.comparison_id ?? null, decision: o.decision, decision_reason: o.decision_reason, blocking_reasons: o.blocking_reasons, criteria_used: o.criteria_used ?? [], criteria_missing: o.criteria_missing ?? [], evidence_urls: o.evidence_urls ?? [], _offer: o._offer ?? null } }];"
+      },
+      "id": "dc-output",
+      "name": "Validate Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Gates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Gates": {
+      "main": [
+        [
+          {
+            "node": "LLM Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Available?": {
+      "main": [
+        [
+          {
+            "node": "Decision Agent (LLM, optional)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Decision Agent (LLM, optional)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Agent (LLM, optional)": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

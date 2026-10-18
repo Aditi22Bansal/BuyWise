@@ -1,0 +1,201 @@
+{
+  "name": "40-agent-review-quality",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "rq-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate review-quality input. Products must already be verified (source_url present).\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nconst products = Array.isArray(i.products) ? i.products : [];\nfor (const p of products) if (!p.source_url) throw new Error('Unverified product: ' + (p.product_id ?? '?'));\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, products, spec_fields: i.spec_fields ?? ['processor','ram','storage','operating_system','display','battery','graphics'], review_evidence: i.review_evidence ?? {} } }];"
+      },
+      "id": "rq-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// DETERMINISTIC evidence assessment (works without LLM; canonical libs: tools/_lib/source_quality.js, tools/_lib/evidence.js).\n// Source tiers: manufacturer 1.0 / major retailer 0.9 / specialist 0.8 / publication 0.6 / video 0.4 / social 0.3 / unknown 0.3.\nconst inp = $input.first().json;\nconst TIERS = [\n  { tier: 'HIGH', score: 1.0, domains: ['dell.com','hp.com','lenovo.com','asus.com','acer.com','apple.com','samsung.com','msi.com'] },\n  { tier: 'HIGH', score: 0.9, domains: ['costco.com','walmart.com','bestbuy.com','croma.com','vijaysales.com','reliancedigital.in','dellstore.com'] },\n  { tier: 'MEDIUM', score: 0.8, domains: ['91mobiles.com','91laptop.com','gsmarena.com','notebookcheck.net','rtings.com','tomshardware.com'] },\n  { tier: 'MEDIUM', score: 0.6, domains: ['hindustantimes.com','yahoo.com','businessinsider.com','ndtv.com','gadgets360.com'] },\n  { tier: 'MEDIUM', score: 0.4, domains: ['youtube.com','youtu.be','reddit.com'] },\n  { tier: 'LOW', score: 0.3, domains: ['instagram.com','facebook.com','twitter.com','x.com','tiktok.com'] },\n];\nconst classify = (url) => { const hm0 = /^https?:\\/\\/([^\\/\\s?#]+)/i.exec(String(url || '').trim()); const h = hm0 ? hm0[1].toLowerCase() : ''; if (!h) return { tier: 'LOW', score: 0.3 }; for (const t of TIERS) if (t.domains.some((d) => h.includes(d))) return { tier: t.tier, score: t.score }; return { tier: 'LOW', score: 0.3 }; };\nconst verified = (v) => v !== null && v !== undefined && !(typeof v === 'string' && (v.trim().toLowerCase() === 'unavailable' || v.trim() === '')) && !(typeof v === 'object' && Object.keys(v).length === 0);\nconst now = new Date().toISOString();\nconst evals = inp.products.map((p) => {\n  const sq = classify(p.source_url);\n  const specs = p.specifications && typeof p.specifications === 'object' ? p.specifications : {};\n  const lower = Object.fromEntries(Object.entries(specs).map(([k, v]) => [k.toLowerCase(), v]));\n  const total = inp.spec_fields.length;\n  const nver = total ? inp.spec_fields.filter((f) => verified(lower[String(f).toLowerCase()])).length : 0;\n  const rev = (inp.review_evidence && inp.review_evidence[p.product_id]) || {};\n  const hasRating = typeof rev.rating === 'number' && rev.rating >= 0 && rev.rating <= (rev.scale ?? 5);\n  return {\n    procurement_id: inp.procurement_id, product_id: p.product_id,\n    source_quality: sq.tier, source_quality_score: sq.score,\n    specification_completeness: total ? nver / total : 0, spec_fields_total: total, spec_fields_verified: nver,\n    review_rating: hasRating ? rev.rating : 'unavailable', review_scale: hasRating ? (rev.scale ?? 5) : null,\n    review_count: Number.isInteger(rev.count) && rev.count >= 0 ? rev.count : 'unavailable',\n    review_evidence: rev.snippet ?? 'unavailable',\n    quality_evidence: [{ kind: 'source_classification', tier: sq.tier }, { kind: 'spec_completeness', verified: nver, total }],\n    quality_confidence: sq.score >= 0.8 ? 0.8 : sq.score,\n    source_urls: [p.source_url].concat(rev.urls ?? []),\n    retrieved_at: now, data_status: nver === 0 && !hasRating ? 'PARTIAL' : 'PARTIAL',\n  };\n});\nreturn [{ json: { procurement_id: inp.procurement_id, evaluations: evals, data_status: evals.length ? 'PARTIAL' : 'UNAVAILABLE' } }];"
+      },
+      "id": "rq-deterministic",
+      "name": "Deterministic Evidence",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $env.LLM_AVAILABLE || 'false' }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "rq-llmgate",
+      "name": "LLM Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        840,
+        340
+      ],
+      "notes": "LLM branch is OPTIONAL enrichment only (Ollama unavailable -> false -> skipped). Never fabricates; deterministic path above is authoritative."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Review the deterministic evidence for {{ $json.evaluations.length }} products and suggest additional evidence queries only. Never invent ratings. Policy: prompts/review-quality.system.md.",
+        "options": {
+          "systemMessage": "You are the BuyWise Review & Quality Agent. Evidence only, no decisions, no scores. Full policy in prompts/review-quality.system.md."
+        }
+      },
+      "id": "rq-agent",
+      "name": "Review Quality Agent (LLM, optional)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        1060,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "model": "={{ $env.LLM_MODEL }}",
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "rq-ollama",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        420
+      ],
+      "credentials": {},
+      "notes": "Wired for future use. Skipped while LLM_AVAILABLE != true."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enforce quality-evaluation schema: URL present, tier valid, no invented ratings.\nconst out = $input.first().json;\nconst evals = Array.isArray(out.evaluations) ? out.evaluations : [];\nfor (const e of evals) {\n  if (!['HIGH','MEDIUM','LOW'].includes(e.source_quality)) throw new Error('bad tier: ' + e.product_id);\n  if (!(e.source_quality_score >= 0 && e.source_quality_score <= 1)) throw new Error('bad tier score: ' + e.product_id);\n  if (typeof e.review_rating === 'number' && !(e.review_rating >= 0)) throw new Error('bad rating: ' + e.product_id);\n  if (!Array.isArray(e.source_urls) || !e.source_urls.length) throw new Error('missing source_urls: ' + e.product_id);\n}\nreturn [{ json: { procurement_id: out.procurement_id, evaluations: evals, data_status: evals.length ? 'PARTIAL' : 'UNAVAILABLE' } }];"
+      },
+      "id": "rq-output",
+      "name": "Validate Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Evidence",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Evidence": {
+      "main": [
+        [
+          {
+            "node": "LLM Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Available?": {
+      "main": [
+        [
+          {
+            "node": "Review Quality Agent (LLM, optional)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Review Quality Agent (LLM, optional)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Quality Agent (LLM, optional)": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

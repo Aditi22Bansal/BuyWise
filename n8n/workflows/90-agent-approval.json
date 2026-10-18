@@ -1,0 +1,115 @@
+{
+  "name": "90-agent-approval",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "ap-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "notes": "Approval PREPARES and WAITS. Never approves/rejects/closes. Human decision arrives via the approval webhook (Wait node). Absence/timeout/views are never approval. No LLM role by design. Canonical rules: tools/_lib/approval.js."
+      },
+      "id": "ap-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate approval input + assemble the 19-section package. Missing sections stay 'unavailable', never fabricated.\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nif (!i.snapshot && !i.procurement) throw new Error('Missing procurement snapshot');\nconst S = (v, dflt) => (v === undefined || v === null ? 'unavailable' : v);\nconst pkg = {\n  procurement_id: i.procurement_id,\n  procurement_request: i.snapshot?.procurement ?? i.procurement ?? 'unavailable',\n  selected_product: i.selected_product ?? 'unavailable',\n  selected_vendor: i.selected_vendor ?? 'unavailable',\n  original_offer: i.original_offer ?? 'unavailable',\n  revised_offer: i.revised_offer ?? 'unavailable',\n  original_score: i.original_score ?? 'unavailable',\n  revised_score: i.revised_score ?? 'unavailable',\n  savings: i.savings ?? 'unavailable',\n  quality_evidence: i.quality_evidence ?? 'unavailable',\n  review_evidence: i.review_evidence ?? 'unavailable',\n  delivery_information: i.delivery_information ?? 'unavailable',\n  warranty_information: i.warranty_information ?? 'unavailable',\n  payment_terms: i.payment_terms ?? 'unavailable',\n  criteria_used: i.criteria_used ?? [],\n  criteria_missing: i.criteria_missing ?? [],\n  limitations: i.limitations ?? ['No verified commercial data available'],\n  evidence_urls: i.evidence_urls ?? [],\n  negotiation_history: i.negotiation_history ?? [],\n  status: 'PENDING_APPROVAL', approved_by: null, approved_at: null, decision_reason: null,\n  expires_at: i.expires_at ?? null,\n};\nconst missing = ['procurement_request'].filter((s) => pkg[s] === undefined);\nif (missing.length) throw new Error('package missing sections: ' + missing.join(','));\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, package: pkg, expires_at: pkg.expires_at } }];"
+      },
+      "id": "ap-package",
+      "name": "Build Package",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "onWebhookCall",
+        "webhookId": "buywise-approval-decision",
+        "options": {
+          "webhookSuffix": "/{{ $json.procurement_id }}"
+        }
+      },
+      "id": "ap-wait",
+      "name": "Wait for Human Decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        620,
+        340
+      ],
+      "notes": "HUMAN-IN-THE-LOOP: execution pauses here until POST /webhook-waiting/buywise-approval-decision/<procurement_id> with {approval_id, procurement_id, decision, actor, decided_at}. No auto-resume counts as approval."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate the HUMAN decision strictly. Only APPROVED/REJECTED/CHANGES_REQUESTED with explicit non-placeholder actor.\nconst pkg = $('Build Package').first().json.package;\nconst w = $input.first().json?.body ?? $input.first().json;\nconst bad = [];\nif (!['APPROVED','REJECTED','CHANGES_REQUESTED'].includes(w.decision)) bad.push('invalid decision (absence/timeout/views are never approval): ' + w.decision);\nconst actor = typeof w.actor === 'string' ? w.actor.trim() : '';\nif (actor.length < 2 || ['unknown','n/a','tbd','test','todo','none'].includes(actor.toLowerCase())) bad.push('placeholder actor identity');\nif (!w.decided_at) bad.push('decision timestamp missing');\nif (w.procurement_id && w.procurement_id !== pkg.procurement_id) bad.push('procurement mismatch');\nif (bad.length) throw new Error('human decision rejected: ' + bad.join('; '));\nreturn [{ json: { procurement_id: pkg.procurement_id, trace_id: $('Build Package').first().json.trace_id, outcome: w.decision, approved_by: actor, approved_at: w.decided_at, decision_reason: typeof w.reason === 'string' ? w.reason : null, package: { ...pkg, status: w.decision === 'APPROVED' ? 'APPROVED' : w.decision === 'REJECTED' ? 'REJECTED' : 'CHANGES_REQUESTED', approved_by: actor, approved_at: w.decided_at } } }];"
+      },
+      "id": "ap-decision",
+      "name": "Validate Human Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        840,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Package",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Package": {
+      "main": [
+        [
+          {
+            "node": "Wait for Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Human Decision": {
+      "main": [
+        [
+          {
+            "node": "Validate Human Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,327 @@
+{
+  "name": "10-agent-product-research",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "pr-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate agent input. No defaults for specs; missing spec stays missing (agent outputs 'unavailable').\nconst i = $input.first().json;\nfor (const f of ['procurement_id','requirement','currency']) if (!i[f]) throw new Error('Missing required field: ' + f);\nif (!/^[A-Z]{3}$/.test(i.currency)) throw new Error('currency must be ISO 4217');\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, requirement: i.requirement, quantity: i.quantity ?? null, budget: i.budget ?? null, currency: i.currency, delivery_requirement: i.delivery_requirement ?? null, mandatory_specs: i.mandatory_specs ?? {}, preferred_specs: i.preferred_specs ?? {} } }];"
+      },
+      "id": "pr-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Requirement: {{ $json.requirement }}\nMandatory: {{ JSON.stringify($json.mandatory_specs) }}\nPreferred: {{ JSON.stringify($json.preferred_specs) }}\n\nUse product-search and web-search tools via the Tool Gateway to find REAL verifiable products. Exclude Amazon/Flipkart. Return strict JSON per product-research-output.schema.json.",
+        "options": {
+          "systemMessage": "You are the BuyWise Product Research Agent. NEVER invent products, specs, or URLs. Every product must come from a Tool Gateway result with a real source_url. Unverifiable fields must be exactly \"unavailable\". Full policy in prompts/product-research.system.md."
+        }
+      },
+      "id": "pr-agent",
+      "name": "Product Research Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "model": "={{ $env.LLM_MODEL }}",
+        "options": {
+          "temperature": 0.1,
+          "numCtx": 8192
+        }
+      },
+      "id": "pr-ollama",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        640,
+        520
+      ],
+      "credentials": {},
+      "notes": "Ollama credential: host http://ollama:11434. Model from env LLM_MODEL (default llama3.1:8b). Swap provider here only; business logic untouched."
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchema": "{\"type\":\"object\",\"required\":[\"products\",\"data_status\"],\"properties\":{\"products\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"product_id\",\"name\",\"specifications\",\"source\",\"source_url\",\"retrieved_at\",\"data_status\",\"confidence\"]}},\"data_status\":{\"type\":\"string\",\"enum\":[\"LIVE\",\"PARTIAL\",\"STALE\",\"UNAVAILABLE\"]}}}"
+      },
+      "id": "pr-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        860,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "92-util-tool-gateway",
+        "mode": "each"
+      },
+      "id": "pr-tool-search",
+      "name": "Gateway product-search",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        860,
+        180
+      ],
+      "notes": "Agent tool: forwards {tool:'product-search', query} to the real gateway. Only gateway access the agent has."
+    },
+    {
+      "parameters": {
+        "workflowId": "92-util-tool-gateway",
+        "mode": "each"
+      },
+      "id": "pr-tool-web",
+      "name": "Gateway web-search",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enforce output schema + no-fake rules: reject products without source_url, reject Amazon/Flipkart.\nconst out = $input.first().json?.output ?? $input.first().json;\nconst pid = $('Validate Input').first().json.procurement_id;\nconst products = Array.isArray(out.products) ? out.products : [];\nfor (const p of products) {\n  if (!p.source_url) throw new Error('Rejecting product without source_url: ' + (p.product_id ?? '?'));\n  const clean = String(p.source_url || '').trim().replace(/ /g, '%20');\n  const hm = /^https?:\\/\\/([^\\/\\s?#]+)/i.exec(clean);\n  if (!hm || !hm[1] || clean.length > 2048) throw new Error('Invalid source_url: ' + p.source_url);\n  if (/(^|.)amazon\\.|(^|.)flipkart\\./i.test(hm[1].toLowerCase())) throw new Error('Excluded source in Phase 1: ' + p.source_url);\n  p.source_url = clean;\n  if (!p.product_id || !p.name || !p.specifications || !p.source || !p.retrieved_at) throw new Error('Product missing required field: ' + JSON.stringify(p).slice(0, 200));\n}\nconst live = products.filter((p) => p.data_status === 'LIVE').length;\nreturn [{ json: { procurement_id: pid, products: products.map((p) => ({ brand: 'unavailable', ...p })), data_status: products.length === 0 ? 'UNAVAILABLE' : live === products.length ? 'LIVE' : 'PARTIAL', unavailable_reasons: products.length === 0 ? ['No verifiable products from configured providers'] : [] } }];"
+      },
+      "id": "pr-output",
+      "name": "Validate Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $env.LLM_AVAILABLE || 'false' }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "det-llm",
+      "name": "LLM Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        540,
+        320
+      ],
+      "notes": "LLM path when available; deterministic path (never mocks) otherwise. Gated, never both."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic gateway query (no LLM): requirement text plus human-readable\n// spec values (never raw key names like ram_gb_min, which poison provider queries).\nconst i = $('Validate Input').first().json;\nconst parts = [i.requirement, 'buy'];\nfor (const [k, v] of Object.entries(i.mandatory_specs || {})) {\n  if (typeof v !== 'number') continue;\n  const kl = String(k).toLowerCase();\n  if (kl.includes('ram') || kl.includes('memory')) parts.push(v + 'GB RAM');\n  else if (kl.includes('stor') || kl.includes('ssd') || kl.includes('disk')) parts.push(v + 'GB SSD');\n}\nconst query = parts.filter(Boolean).join(' ').slice(0, 300);\nreturn [{ json: { tool: 'product-search', query, max_results: 10 } }];"
+      },
+      "id": "det-bq",
+      "name": "Build Gateway Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "92-util-tool-gateway",
+        "mode": "each"
+      },
+      "id": "det-gw",
+      "name": "Call Gateway",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        980,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic normalization (no LLM): verified envelopes -> product candidates.\n// Suitability is NOT judged here: everything stays PARTIAL for later review.\n// No URL -> rejected. Amazon/Flipkart -> rejected. Missing fields -> unavailable.\nconst items = $input.all().map((i) => i.json);\nconst seen = new Set();\nconst products = [];\nconst procShort = String(($('Validate Input').first().json.procurement_id) || '').replace(/-/g, '').slice(0, 8);\nfor (const e of items) {\n  if (!e || e.data_status === 'UNAVAILABLE' || !e.source_url) continue;\n  if (/amazon\\.|flipkart\\./i.test(e.source_url)) continue;\n  const key = e.source + ':' + e.source_url;\n  if (seen.has(key)) continue;\n  seen.add(key);\n  const d = e.data || {};\n  const slug = String(d.product_name || d.title || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'product';\n  products.push({\n    product_id: 'p-' + slug.slice(0, 30) + '-' + procShort + '-' + seen.size,\n    name: String(d.product_name || d.title || 'unavailable').slice(0, 300),\n    brand: 'unavailable',\n    specifications: {},\n    source: e.source,\n    source_url: e.source_url,\n    retrieved_at: e.retrieved_at,\n    data_status: 'PARTIAL',\n    confidence: (typeof e.confidence === 'number' ? e.confidence : 0.5),\n    raw: { serpapi_product_id: d.serpapi_product_id ?? null, title: d.product_name ?? d.title ?? null },\n  });\n}\nconst inp = $('Validate Input').first().json;\nreturn [{ json: { procurement_id: inp.procurement_id, products, data_status: products.length ? 'PARTIAL' : 'UNAVAILABLE', unavailable_reasons: products.length ? [] : ['No verifiable results from configured providers'] } }];"
+      },
+      "id": "det-norm",
+      "name": "Normalize Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "LLM Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Product Research Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Product Research Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway product-search": {
+      "ai_tool": [
+        [
+          {
+            "node": "Product Research Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway web-search": {
+      "ai_tool": [
+        [
+          {
+            "node": "Product Research Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Product Research Agent": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Available?": {
+      "main": [
+        [
+          {
+            "node": "Product Research Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Gateway Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gateway Query": {
+      "main": [
+        [
+          {
+            "node": "Call Gateway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gateway": {
+      "main": [
+        [
+          {
+            "node": "Normalize Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Results": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

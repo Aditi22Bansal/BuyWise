@@ -1,0 +1,67 @@
+{
+  "name": "75-demo-response",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "BuyWise LOCAL DEMO Vendor Response",
+        "formDescription": "DEMO ONLY: manually enter a simulated vendor response. NO REAL VENDOR IS CONTACTED. Nothing is sent anywhere. The entry is labeled DEMO_HUMAN_ENTERED.",
+        "formFields": {
+          "values": [
+            { "fieldLabel": "procurement_id", "fieldType": "text", "requiredField": true },
+            { "fieldLabel": "offer_id", "fieldType": "text", "requiredField": true },
+            { "fieldLabel": "revised_price", "fieldType": "number", "requiredField": true },
+            { "fieldLabel": "currency", "fieldType": "text", "requiredField": true },
+            { "fieldLabel": "delivery_days", "fieldType": "text", "requiredField": false },
+            { "fieldLabel": "warranty", "fieldType": "text", "requiredField": false },
+            { "fieldLabel": "payment_terms", "fieldType": "text", "requiredField": false },
+            { "fieldLabel": "notes", "fieldType": "textarea", "requiredField": false }
+          ]
+        },
+        "options": {}
+      },
+      "id": "dm-form",
+      "name": "Demo Response Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [240, 300],
+      "webhookId": "buywise-demo-response"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate HUMAN-entered demo response. Explicit labels; never a vendor response.\n// Currency match against the referenced offer is checked at persist time via snapshot.\nconst b = $input.first().json;\nconst bad = [];\nif (!b.procurement_id) bad.push('procurement_id required');\nif (!b.offer_id) bad.push('offer_id required');\nif (!(typeof b.revised_price === 'number' && b.revised_price > 0)) bad.push('revised_price must be an entered number > 0 (no prepopulation)');\nif (!b.currency || !/^[A-Za-z]{3}$/.test(String(b.currency))) bad.push('currency required (ISO code)');\nif (bad.length) throw new Error('demo response rejected: ' + bad.join('; '));\nreturn [{ json: { operation: 'insert_demo_responses', payload: { procurement_id: b.procurement_id, responses: [{ offer_id: b.offer_id, revised_price: b.revised_price, currency: String(b.currency).toUpperCase(), delivery_days: b.delivery_days ?? 'unavailable', warranty: b.warranty ?? 'unavailable', payment_terms: b.payment_terms ?? 'unavailable', notes: b.notes ?? '' }] } } }];"
+      },
+      "id": "dm-validate",
+      "name": "Validate Demo Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": { "workflowId": "90-util-state-manager", "mode": "each" },
+      "id": "dm-persist",
+      "name": "Persist Demo Response",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"DEMO_RESPONSE_RECEIVED\", \"response_mode\": \"DEMO_HUMAN_ENTERED\", \"vendor_response_verified\": false, \"message\": \"Recorded as LOCAL DEMO input. NO MESSAGE SENT TO VENDOR. No real vendor contacted.\"}"
+      },
+      "id": "dm-respond",
+      "name": "Respond DEMO Stored",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 300]
+    }
+  ],
+  "connections": {
+    "Demo Response Form": { "main": [[{ "node": "Validate Demo Input", "type": "main", "index": 0 }]] },
+    "Validate Demo Input": { "main": [[{ "node": "Persist Demo Response", "type": "main", "index": 0 }]] },
+    "Persist Demo Response": { "main": [[{ "node": "Respond DEMO Stored", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

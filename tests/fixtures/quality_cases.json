@@ -1,0 +1,45 @@
+{
+  "_fixture_note": "UNIT TEST FIXTURES ONLY — synthetic URLs/snippets for evidence tests. NEVER production data, NEVER live, NEVER inserted into PostgreSQL.",
+  "source_tiers": [
+    { "url": "https://www.dell.com/en-us/shop/laptop-x", "tier": "HIGH", "score": 1.0 },
+    { "url": "https://www.croma.com/16gb-ram-laptops", "tier": "HIGH", "score": 0.9 },
+    { "url": "https://www.dellstore.com/laptops.html", "tier": "HIGH", "score": 0.9 },
+    { "url": "https://www.91mobiles.com/list-of-laptops/best-laptops-for-business", "tier": "MEDIUM", "score": 0.8 },
+    { "url": "https://www.hindustantimes.com/technology/x", "tier": "MEDIUM", "score": 0.6 },
+    { "url": "https://www.youtube.com/watch?v=abc123", "tier": "MEDIUM", "score": 0.4 },
+    { "url": "https://www.instagram.com/reel/xyz", "tier": "LOW", "score": 0.3 },
+    { "url": "https://random-blog-12345.example/p", "tier": "LOW", "score": 0.3 },
+    { "url": "not a url at all", "tier": "LOW", "score": 0.3 }
+  ],
+  "specs": [
+    { "id": "all-missing", "specs": { "ram_gb": "unavailable", "storage_gb": "unavailable" }, "fields": ["ram_gb", "storage_gb"], "completeness": 0.0, "verified": 0 },
+    { "id": "half", "specs": { "ram_gb": 16, "storage_gb": "unavailable", "processor": "i5", "display": null }, "fields": ["ram_gb", "storage_gb", "processor", "display"], "completeness": 0.5, "verified": 2 },
+    { "id": "empty-fields", "specs": { "ram_gb": 16 }, "fields": [], "completeness": 0, "verified": 0 }
+  ],
+  "spec_extract": [
+    { "id": "clean", "text": "ThinkPad T14 with 16GB RAM and 512GB SSD storage, 1-year warranty included.", "ram": 16, "storage": 512, "warranty": 12 },
+    { "id": "low-ram", "text": "Dell Inspiron 15 with 8 GB RAM, 512 GB SSD", "ram": 8, "storage": 512, "warranty": null },
+    { "id": "tb", "text": "16GB RAM 1TB SSD laptop with 3 year warranty", "ram": 16, "storage": 1024, "warranty": 36 },
+    { "id": "ambiguous", "text": "Compare 8GB RAM vs 16GB RAM models, 512GB SSD", "ram": null, "storage": 512, "warranty": null },
+    { "id": "bare-numbers", "text": "16GB 512GB 15.6 inch display laptop", "ram": null, "storage": null, "warranty": null }
+  ],
+  "contact_extract": [
+    { "id": "sales", "text": "Contact us at sales@shop.example or visit our store", "email": "sales@shop.example" },
+    { "id": "noreply-skipped", "text": "Write to noreply@shop.example; or help@shop.example for support", "email": "help@shop.example" },
+    { "id": "none", "text": "Call us at 1800-123-456, no email listed", "email": null },
+    { "id": "inferred-banned", "text": "Visit shop.example for more info", "email": null }
+  ],
+  "attribution": [
+    { "id": "wrong-subject", "text": "Instagram is rated Bad with 1.3 / 5 on Trustpilot from 343 reviews", "tokens": ["laptop", "16gb"], "accepted": false },
+    { "id": "ambiguous-multi", "text": "Laptops at Costco rated 3.5 out of 5 stars. Also rated 3.0 out of 5 stars.", "tokens": ["laptop"], "accepted": false },
+    { "id": "clean-single", "text": "Lenovo Legion Pro 5 laptop: 4.9/5 from 15 ratings, great thermals", "tokens": ["laptop"], "accepted": true, "rating": 4.9 }
+  ],
+  "ratings": [
+    { "id": "slash5", "text": "Overall 4.3/5 from 1,240 reviews", "rating": 4.3, "scale": 5, "count": 1240 },
+    { "id": "out-of", "text": "Rated 4 out of 5 stars by users", "rating": 4, "scale": 5, "count": null },
+    { "id": "stars", "text": "A solid 4.5 stars laptop", "rating": 4.5, "scale": 5, "count": null },
+    { "id": "no-rating", "text": "16GB RAM 512GB SSD business laptop, great keyboard", "rating": null, "scale": null, "count": null },
+    { "id": "false-positive-guard", "text": "16GB RAM, 512GB SSD, 15.6 inch display", "rating": null, "scale": null, "count": null },
+    { "id": "count-only", "text": "Based on 836 reviews, a decent machine", "rating": null, "scale": null, "count": 836 }
+  ]
+}

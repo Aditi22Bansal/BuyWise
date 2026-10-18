@@ -1,0 +1,74 @@
+{
+  "name": "93-util-logger",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "lg-trigger",
+      "name": "Logger Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Redact secrets before writing audit records. Drops key-like values.\nconst e = $input.first().json;\nconst REDACT = ['api_key','apikey','authorization','bearer','token','secret','password','app_id','cert_id'];\nconst clean = (v) => {\n  if (Array.isArray(v)) return v.map(clean);\n  if (v && typeof v === 'object') { const o = {}; for (const [k, val] of Object.entries(v)) { o[k] = REDACT.some((r) => k.toLowerCase().includes(r)) ? '[REDACTED]' : clean(val); } return o; }\n  if (typeof v === 'string' && /^(tvly-|re_|Bearer |Basic )/i.test(v)) return '[REDACTED]';\n  return v;\n};\nreturn [{ json: { operation: 'audit', payload: { procurement_id: e.procurement_id, trace_id: e.trace_id, agent_name: e.agent_name, event: e.event, source: e.source ?? null, source_url: e.source_url ?? null, retrieved_at: e.retrieved_at ?? null, detail: clean(e.detail ?? {}) } } }];"
+      },
+      "id": "lg-redact",
+      "name": "Redact Secrets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "lg-state",
+      "name": "Call State Manager",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        680,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Logger Trigger": {
+      "main": [
+        [
+          {
+            "node": "Redact Secrets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redact Secrets": {
+      "main": [
+        [
+          {
+            "node": "Call State Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

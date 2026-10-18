@@ -1,0 +1,203 @@
+{
+  "name": "70-agent-negotiation",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "ng-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate negotiation input. Missing vendor/offer/contact -> NOT_READY downstream, never fabricated here.\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nif (!i.decision || i.decision.decision !== 'NEGOTIATE') throw new Error('Negotiation requires a NEGOTIATE decision');\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, decision: i.decision, vendor: i.vendor ?? null, offer: i.offer ?? null, product: i.product ?? null, procurement: i.procurement ?? {}, allowed_discount_pct: i.allowed_discount_pct ?? null, requested_terms: i.requested_terms ?? [] } }];"
+      },
+      "id": "ng-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Eligibility + target + facts-only draft (canonical: tools/_lib/negotiation.js). No simulation, no sending.\nconst inp = $input.first().json;\nconst reasons = [];\nconst v = inp.vendor || {}, o = inp.offer || {};\nif (!v.vendor_id || !v.vendor_name || v.vendor_name === 'unavailable') reasons.push('no verified vendor identity');\nif (!v.source_url) reasons.push('no vendor source URL');\nif (!o.offer_id || !o.product_id) reasons.push('no real offer');\nif (!(typeof o.net_price === 'number' && o.net_price > 0)) reasons.push('no verified price');\nif (!o.currency) reasons.push('no offer currency');\nconst c = v.contact_channel || {};\nif (!c.type || !c.address) reasons.push('no vendor contact information');\nelse if (c.status === 'UNAVAILABLE') reasons.push('contact channel unavailable');\nelse if (!c.source_url) reasons.push('contact without verifiable source');\nif (o.currency && inp.procurement.currency && String(o.currency).toUpperCase() !== String(inp.procurement.currency).toUpperCase()) reasons.push('currency mismatch (no FX source)');\nif (reasons.length) return [{ json: { procurement_id: inp.procurement_id, status: 'NOT_READY', reasons, negotiation: null, message: null, human_confirmation: false, do_not_send: true } }];\nlet target = null, basis = null;\nconst sameCcy = String(o.currency).toUpperCase() === String(inp.procurement.currency || o.currency).toUpperCase();\nif (typeof inp.procurement.budget === 'number' && inp.procurement.budget > 0 && sameCcy && inp.procurement.budget < o.net_price) { target = inp.procurement.budget; basis = 'procurement_budget'; }\nelse if (typeof inp.allowed_discount_pct === 'number' && inp.allowed_discount_pct > 0 && inp.allowed_discount_pct < 100) { target = Math.round(o.net_price * (1 - inp.allowed_discount_pct / 100) * 100) / 100; basis = 'explicit_allowed_discount:' + inp.allowed_discount_pct + '%'; }\nif (target === null) return [{ json: { procurement_id: inp.procurement_id, status: 'NOT_READY', reasons: ['no negotiation target (target_price unavailable)'], negotiation: null, message: null, human_confirmation: false, do_not_send: true } }];\nconst discount = Math.round((1 - target / o.net_price) * 10000) / 100;\nconst negotiation = { procurement_id: inp.procurement_id, product_id: o.product_id, vendor_id: v.vendor_id, offer_id: o.offer_id, current_price: o.net_price, currency: String(o.currency).toUpperCase(), target_price: target, requested_discount_percent: discount, requested_terms: inp.requested_terms, reason: inp.decision.decision_reason, contact_channel: v.contact_channel, status: 'READY_FOR_HUMAN_REVIEW', human_confirmation: false, do_not_send: true, created_at: new Date().toISOString() };\nconst facts = ['Product: ' + (inp.product?.name ?? o.product_id), 'Current verified price: ' + o.net_price + ' ' + negotiation.currency, 'Requested price: ' + target + ' ' + negotiation.currency];\nif (inp.procurement.quantity) facts.push('Quantity: ' + inp.procurement.quantity);\nconst changes = ['Unit price ' + o.net_price + ' ' + negotiation.currency + ' -> ' + target + ' ' + negotiation.currency].concat(inp.requested_terms.map(String));\nconst message = { subject: 'Price request: ' + (inp.product?.name ?? o.product_id) + ' (' + o.net_price + ' ' + negotiation.currency + ')', body: ['Dear ' + (v.contact_channel.address ?? 'Sales team') + ',', '', 'We are evaluating ' + (inp.product?.name ?? o.product_id) + ' listed at ' + o.net_price + ' ' + negotiation.currency + (inp.procurement.quantity ? ' (quantity ' + inp.procurement.quantity + ')' : '') + '.', 'We would like to request a revised quotation at ' + target + ' ' + negotiation.currency + '.', ...inp.requested_terms.map((t) => 'We would also like to discuss: ' + t + '.'), '', 'Please reply with your best revised quotation. This request is subject to our standard procurement review; no order is placed by this message.'].join('\\n'), facts_used: facts, requested_changes: changes, evidence_urls: inp.product?.evidence_urls ?? [] };\nreturn [{ json: { procurement_id: inp.procurement_id, status: 'READY_FOR_HUMAN_REVIEW', reasons: [], negotiation, message, target_basis: basis, human_confirmation: false, do_not_send: true } }];"
+      },
+      "id": "ng-prepare",
+      "name": "Validate & Prepare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "READY_FOR_HUMAN_REVIEW",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ng-ready",
+      "name": "Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        840,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.human_confirmation }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "isEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ng-sendgate",
+      "name": "Send Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1060,
+        220
+      ],
+      "notes": "Phase 2B NEVER sends. Both branches return do_not_send=true; sending + vendor responses are Phase 2C."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Terminal: sending blocked in Phase 2B regardless of confirmation.\nconst i = $input.first().json;\nreturn [{ json: { ...i, human_confirmation: i.human_confirmation ?? false, do_not_send: true, send_blocked_reason: 'Phase 2B: external sending requires Phase 2C email infrastructure + explicit human confirmation' } }];"
+      },
+      "id": "ng-blocked",
+      "name": "Blocked Phase 2C",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// NOT_READY passthrough: no row, no message, no send. Orchestrator records evaluated_not_ready event.\nconst i = $input.first().json;\nreturn [{ json: { procurement_id: i.procurement_id, status: 'NOT_READY', reasons: i.reasons ?? [], negotiation: null, message: null, human_confirmation: false, do_not_send: true } }];"
+      },
+      "id": "ng-notready",
+      "name": "Not Ready",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Validate & Prepare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Prepare": {
+      "main": [
+        [
+          {
+            "node": "Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ready?": {
+      "main": [
+        [
+          {
+            "node": "Send Gate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not Ready",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Gate": {
+      "main": [
+        [
+          {
+            "node": "Blocked Phase 2C",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Blocked Phase 2C",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

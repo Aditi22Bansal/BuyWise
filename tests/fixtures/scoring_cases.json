@@ -1,0 +1,30 @@
+{
+  "_fixture_note": "UNIT TEST FIXTURES ONLY — synthetic edge-case inputs for scoring tests. NEVER production data, NEVER live, NEVER inserted into PostgreSQL.",
+  "cases": [
+    { "id": "all-available", "components": { "price": 0.8, "quality": 0.7, "reviews": 0.6, "source_quality": 0.9, "specification_completeness": 0.5 }, "weights": { "price": 0.25, "quality": 0.2, "reviews": 0.15, "source_quality": 0.25, "specification_completeness": 0.15 }, "expected_score": 0.73, "expected_used": ["price", "quality", "reviews", "source_quality", "specification_completeness"] },
+    { "id": "some-missing-renormalize", "components": { "price": 0.8, "quality": null, "reviews": null, "source_quality": 0.9, "specification_completeness": 0.0 }, "weights": { "price": 0.25, "quality": 0.2, "reviews": 0.15, "source_quality": 0.25, "specification_completeness": 0.15 }, "expected_score": 0.6538461538461539, "expected_used": ["price", "source_quality", "specification_completeness"], "expected_missing": ["quality", "reviews"] },
+    { "id": "all-missing", "components": { "price": null, "reviews": null }, "weights": { "price": 0.5, "reviews": 0.5 }, "expected_score": null },
+    { "id": "zero-weights-ignored", "components": { "price": 0.1, "source_quality": 0.9 }, "weights": { "price": 0, "source_quality": 1 }, "expected_score": 0.9, "expected_used": ["source_quality"] },
+    { "id": "tie-input", "components": { "source_quality": 0.6, "specification_completeness": 0.0 }, "weights": { "source_quality": 0.5, "specification_completeness": 0.5 }, "expected_score": 0.3 }
+  ],
+  "invalid_weights": [
+    { "id": "negative", "weights": { "price": -0.1 }, "must_fail": true },
+    { "id": "non-numeric", "weights": { "price": "high" }, "must_fail": true },
+    { "id": "unknown-criterion", "weights": { "magic": 1 }, "must_fail": true },
+    { "id": "not-object", "weights": [0.5], "must_fail": true }
+  ],
+  "ratings": [
+    { "id": "five-scale", "rating": 4.5, "scale": 5, "expected": 0.9 },
+    { "id": "ten-scale", "rating": 8, "scale": 10, "expected": 0.8 },
+    { "id": "out-of-range", "rating": 6, "scale": 5, "expected": null },
+    { "id": "bad-scale", "rating": 4, "scale": 0, "expected": null },
+    { "id": "nan", "rating": null, "scale": 5, "expected": null }
+  ],
+  "budgets": [
+    { "id": "compliant", "price": 70000, "currency": "INR", "budget": 80000, "budget_ccy": "INR", "expected": 1 },
+    { "id": "exceeded", "price": 90000, "currency": "INR", "budget": 80000, "budget_ccy": "INR", "expected": 0 },
+    { "id": "currency-mismatch", "price": 900, "currency": "USD", "budget": 80000, "budget_ccy": "INR", "expected": null },
+    { "id": "no-price", "price": null, "currency": null, "budget": 80000, "budget_ccy": "INR", "expected": null },
+    { "id": "no-budget", "price": 70000, "currency": "INR", "budget": null, "budget_ccy": "INR", "expected": null }
+  ]
+}

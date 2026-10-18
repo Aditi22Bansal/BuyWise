@@ -1,0 +1,86 @@
+{
+  "name": "60-util-scoring-engine",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "se-trigger",
+      "name": "Scoring Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "notes": "DETERMINISTIC scoring only. No LLM ever. Missing criteria are EXCLUDED with weight renormalization (never 0). Canonical algorithm: tools/_lib/scoring.js \u2014 keep in sync; tests pin behavior. Input: {components: {criterion: 0..1|null}, weights}. Output: {overall_score|null, criteria_used, criteria_missing, effective_weight_total, breakdown}."
+      },
+      "id": "se-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate weights: known criteria, numeric, non-negative. Unknown/negative/invalid rejected.\nconst CRITERIA = ['price','quality','reviews','delivery','warranty','vendor_reliability','payment_terms','budget_compliance','source_quality','specification_completeness'];\nconst b = $input.first().json;\nconst weights = b.weights ?? {};\nconst errors = [];\nfor (const [k, w] of Object.entries(weights)) {\n  if (!CRITERIA.includes(k)) errors.push('unknown criterion: ' + k);\n  else if (typeof w !== 'number' || Number.isNaN(w)) errors.push('non-numeric weight: ' + k);\n  else if (w < 0) errors.push('negative weight: ' + k);\n}\nif (errors.length) throw new Error('invalid weights: ' + errors.join('; '));\nreturn [{ json: { components: b.components ?? {}, weights, product_id: b.product_id ?? null } }];"
+      },
+      "id": "se-validate",
+      "name": "Validate Weights",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic weighted score with renormalization over available criteria only.\nconst { components, weights } = $input.first().json;\nconst used = [], missing = [], breakdown = {};\nlet num = 0, den = 0;\nfor (const c of ['price','quality','reviews','delivery','warranty','vendor_reliability','payment_terms','budget_compliance','source_quality','specification_completeness']) {\n  const w = weights[c] ?? 0;\n  const v = components[c];\n  if (w === 0) continue;\n  if (typeof v === 'number' && !Number.isNaN(v) && v >= 0 && v <= 1) {\n    used.push(c); num += w * v; den += w;\n    breakdown[c] = { score: v, weight: w, contribution: w * v };\n  } else { missing.push(c); breakdown[c] = { score: null, weight: w, contribution: 0 }; }\n}\nconst _inp = $input.first().json;\nreturn [{ json: { product_id: _inp.product_id ?? null, overall_score: den > 0 ? num / den : null, criteria_used: used, criteria_missing: missing, effective_weight_total: den, breakdown } }];"
+      },
+      "id": "se-score",
+      "name": "Compute Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Scoring Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Weights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Weights": {
+      "main": [
+        [
+          {
+            "node": "Compute Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

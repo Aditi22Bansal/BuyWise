@@ -1,0 +1,326 @@
+{
+  "name": "20-agent-vendor-research",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "vr-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate: products must already be verified (have source_url). No products -> UNAVAILABLE, not fake offers.\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nconst products = Array.isArray(i.products) ? i.products : [];\nfor (const p of products) if (!p.source_url) throw new Error('Unverified product passed to vendor research: ' + (p.product_id ?? '?'));\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, currency: i.currency ?? 'USD', products } }];"
+      },
+      "id": "vr-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=For each verified product id+name below, use vendor-search and price-retrieval tools via the Tool Gateway to find REAL vendor offers. Products: {{ JSON.stringify($json.products.map(p => ({product_id: p.product_id, name: p.name}))) }}. Case currency: {{ $json.currency }}. Unverifiable fields must be exactly \"unavailable\". No currency conversion. Return strict JSON per vendor-research-output.schema.json.",
+        "options": {
+          "systemMessage": "You are the BuyWise Vendor Research Agent. NEVER create vendors, prices, discounts, delivery, warranty, or payment terms. Every offer needs a real source_url from the Tool Gateway. Full policy in prompts/vendor-research.system.md."
+        }
+      },
+      "id": "vr-agent",
+      "name": "Vendor Research Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "model": "={{ $env.LLM_MODEL }}",
+        "options": {
+          "temperature": 0.1,
+          "numCtx": 8192
+        }
+      },
+      "id": "vr-ollama",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        640,
+        520
+      ],
+      "credentials": {},
+      "notes": "Ollama credential: host http://ollama:11434. Model from env LLM_MODEL (default llama3.1:8b)."
+    },
+    {
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchema": "{\"type\":\"object\",\"required\":[\"offers\",\"data_status\"],\"properties\":{\"offers\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"offer_id\",\"product_id\",\"vendor_id\",\"vendor_name\",\"source\",\"source_url\",\"retrieved_at\",\"data_status\",\"confidence\"]}},\"data_status\":{\"type\":\"string\",\"enum\":[\"LIVE\",\"PARTIAL\",\"STALE\",\"UNAVAILABLE\"]}}}"
+      },
+      "id": "vr-parser",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        860,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "92-util-tool-gateway",
+        "mode": "each"
+      },
+      "id": "vr-tool-vendors",
+      "name": "Gateway vendor-search",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        860,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "92-util-tool-gateway",
+        "mode": "each"
+      },
+      "id": "vr-tool-prices",
+      "name": "Gateway price-retrieval",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enforce vendor output rules: URL required, price>0 with currency, no cross-currency compare here.\nconst out = $input.first().json?.output ?? $input.first().json;\nconst inp = $('Validate Input').first().json;\nconst offers = Array.isArray(out.offers) ? out.offers : [];\nconst pids = new Set(inp.products.map((p) => p.product_id));\nfor (const o of offers) {\n  if (!pids.has(o.product_id)) throw new Error('Offer references unknown product: ' + o.offer_id);\n  if (!o.source_url) throw new Error('Rejecting offer without source_url: ' + o.offer_id);\n  if (typeof o.unit_price === 'number') { if (!(o.unit_price > 0)) throw new Error('Invalid price: ' + o.offer_id); if (!o.currency) throw new Error('Price without currency: ' + o.offer_id); }\n  for (const f of ['delivery_days','warranty_months','payment_terms','availability']) if (o[f] === null || o[f] === '') throw new Error(`Field ${f} must be value or \"unavailable\": ` + o.offer_id);\n}\nconst live = offers.filter((o) => o.data_status === 'LIVE').length;\nconst seenV = new Set();\nconst vendors = [];\nfor (const o of offers) {\n  if (seenV.has(o.vendor_id)) continue;\n  seenV.add(o.vendor_id);\n  if (!o.vendor_name || o.vendor_name === 'unavailable') throw new Error('Offer without verified merchant: ' + o.offer_id);\n  vendors.push({ vendor_id: o.vendor_id, vendor_name: o.vendor_name, vendor_url: o.source_url, source: o.source, source_url: o.source_url, retrieved_at: o.retrieved_at, data_status: o.data_status, confidence: o.confidence ?? 0.6, raw: { derived_from_offer: o.offer_id } });\n}\nreturn [{ json: { procurement_id: inp.procurement_id, offers, vendors, data_status: offers.length === 0 ? 'UNAVAILABLE' : live === offers.length ? 'LIVE' : 'PARTIAL', unavailable_reasons: offers.length === 0 ? ['No verifiable vendor offers from configured providers'] : [] } }];"
+      },
+      "id": "vr-output",
+      "name": "Validate Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $env.LLM_AVAILABLE || 'false' }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "det-llm",
+      "name": "LLM Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        540,
+        320
+      ],
+      "notes": "LLM path when available; deterministic path (never mocks) otherwise. Gated, never both."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic vendor query (no LLM): top product names as one search.\n// Attribution to products happens in Normalize Offers via serpapi_product_id join.\nconst inp = $('Validate Input').first().json;\nconst names = (inp.products ?? []).slice(0, 5).map((p) => p.name).filter(Boolean).join(' ').slice(0, 300);\nreturn [{ json: { tool: 'vendor-search', query: names || 'business laptop', max_results: 10 } }];"
+      },
+      "id": "det-bq",
+      "name": "Build Gateway Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "92-util-tool-gateway",
+        "mode": "each"
+      },
+      "id": "det-gw",
+      "name": "Call Gateway",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        980,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deterministic offer normalization (no LLM): SerpAPI commercial evidence only.\n// Tavily enrichment results NEVER become offers. Attribution via serpapi_product_id\n// join against input products; unmatched listings are skipped, never cross-attached.\n// Prices parsed from explicit symbols/codes only; 'starting from' and bare numbers\n// without currency are rejected as offers.\nconst parsePrice = (raw) => {\n  if (typeof raw === 'number') return raw > 0 ? { price: raw, currency: null } : {};\n  if (typeof raw !== 'string') return {};\n  const s = raw.trim();\n  if (/starting from/i.test(s)) return {};\n  let currency = null;\n  if (s.includes('\\u20B9')) currency = 'INR';\n  else if (s.includes('\\u20AC')) currency = 'EUR';\n  else if (s.includes('\\u00A3')) currency = 'GBP';\n  else if (s.includes('$')) currency = 'USD';\n  const cm = s.match(/\\b(INR|USD|EUR|GBP|JPY|CAD|AUD)\\b/i);\n  if (cm) currency = cm[1].toUpperCase();\n  const m = s.replace(/,/g, '').match(/(\\d+(?:\\.\\d+)?)/);\n  const price = m ? Number(m[1]) : null;\n  if (!(price > 0)) return {};\n  return { price, currency };\n};\nconst items = $input.all().map((i) => i.json);\nconst inp = $('Validate Input').first().json;\nconst procShort = String(inp.procurement_id || '').replace(/-/g, '').slice(0, 8);\nconst byPid = {};\nfor (const p of (inp.products ?? [])) {\n  const sid = p.raw && p.raw.serpapi_product_id;\n  if (sid && sid !== 'unavailable') byPid[sid] = p;\n}\nconst seen = new Set();\nconst offers = [];\nconst skipped = { noncommercial: 0, unmatched: 0, incomplete: 0 };\nfor (const e of items) {\n  if (!e || e.data_status === 'UNAVAILABLE' || e.source !== 'serpapi_shopping') { skipped.noncommercial++; continue; }\n  const d = e.data || {};\n  const prod = d.serpapi_product_id ? byPid[d.serpapi_product_id] : null;\n  if (!prod) { skipped.unmatched++; continue; }\n  const pr = parsePrice(d.price);\n  if (!(pr.price > 0) || !pr.currency) { skipped.incomplete++; continue; }\n  const merchant = (typeof d.merchant_name === 'string' && d.merchant_name !== 'unavailable') ? d.merchant_name : null;\n  if (!merchant || !e.source_url) { skipped.incomplete++; continue; }\n  const key = prod.product_id + '|' + merchant.toLowerCase() + '|' + e.source_url;\n  if (seen.has(key)) continue;\n  seen.add(key);\n  const mslug = merchant.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'vendor';\n  offers.push({\n    offer_id: 'o-' + procShort + '-' + mslug + '-' + seen.size,\n    product_id: prod.product_id,\n    vendor_id: 'v-' + mslug + '-' + procShort + '-' + seen.size,\n    vendor_name: merchant,\n    unit_price: pr.price,\n    currency: pr.currency,\n    discount_pct: 'unavailable',\n    net_price: pr.price,\n    delivery_days: (typeof d.delivery === 'string' ? d.delivery.slice(0, 120) : 'unavailable'),\n    warranty_months: 'unavailable',\n    payment_terms: 'unavailable',\n    availability: 'unavailable',\n    source: 'serpapi_shopping',\n    source_url: e.source_url,\n    retrieved_at: e.retrieved_at,\n    data_status: 'PARTIAL',\n    confidence: (typeof e.confidence === 'number' ? e.confidence : 0.6),\n  });\n}\nconst seenV = new Set();\nconst vendors = [];\nfor (const o of offers) {\n  if (seenV.has(o.vendor_id)) continue;\n  seenV.add(o.vendor_id);\n  if (!o.vendor_name || o.vendor_name === 'unavailable') throw new Error('Offer without verified merchant: ' + o.offer_id);\n  vendors.push({ vendor_id: o.vendor_id, vendor_name: o.vendor_name, vendor_url: o.source_url, source: o.source, source_url: o.source_url, retrieved_at: o.retrieved_at, data_status: o.data_status, confidence: o.confidence ?? 0.6, raw: { derived_from_offer: o.offer_id } });\n}\nreturn [{ json: { procurement_id: inp.procurement_id, offers, vendors, data_status: offers.length ? 'PARTIAL' : 'UNAVAILABLE', unavailable_reasons: offers.length ? [] : ['No attributable commercial evidence'], skipped } }];"
+      },
+      "id": "det-norm",
+      "name": "Normalize Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        120
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "LLM Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Vendor Research Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Vendor Research Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway vendor-search": {
+      "ai_tool": [
+        [
+          {
+            "node": "Vendor Research Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gateway price-retrieval": {
+      "ai_tool": [
+        [
+          {
+            "node": "Vendor Research Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vendor Research Agent": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Available?": {
+      "main": [
+        [
+          {
+            "node": "Vendor Research Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Gateway Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gateway Query": {
+      "main": [
+        [
+          {
+            "node": "Call Gateway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gateway": {
+      "main": [
+        [
+          {
+            "node": "Normalize Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Results": {
+      "main": [
+        [
+          {
+            "node": "Validate Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

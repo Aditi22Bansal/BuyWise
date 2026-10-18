@@ -1,0 +1,2525 @@
+{
+  "name": "00-orchestrator-buywise",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "procurement-request",
+        "responseMode": "responseNode",
+        "options": {},
+        "httpMethod": "POST"
+      },
+      "id": "or-webhook",
+      "name": "Procurement Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        160,
+        340
+      ],
+      "webhookId": "buywise-procurement-request"
+    },
+    {
+      "parameters": {
+        "notes": "ORCHESTRATOR: routing + state + validation + retries + persistence + errors + audit. NO LLM, NO scoring. Flow: intake -> products -> vendors -> review&quality -> comparison -> decision -> (negotiation if NEGOTIATE) -> respond. Missing data continues as PARTIAL, never fabricated. Statuses: created -> product_done -> (vendor_done) -> quality_done -> compared."
+      },
+      "id": "or-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        160,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Intake validation (mirrors schemas/procurement-request.schema.json). Weights/scoring overrides pass through untouched.\nconst b = $input.first().json?.body ?? $input.first().json;\nif (!b.requirement || String(b.requirement).length < 5) throw new Error('requirement required (min 5 chars)');\nif (!b.currency || !/^[A-Z]{3}$/.test(b.currency)) throw new Error('currency required as ISO 4217');\nif (b.quantity != null && !(Number.isInteger(b.quantity) && b.quantity > 0)) throw new Error('quantity must be positive integer');\nif (b.budget != null && !(typeof b.budget === 'number' && b.budget > 0)) throw new Error('budget must be positive number');\nconst __hex = (n) => { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[Math.floor(Math.random() * 16)]; return s; };\nconst __uuid = () => { try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID(); } catch (e) {} return __hex(8) + '-' + __hex(4) + '-4' + __hex(3) + '-8' + __hex(3) + '-' + __hex(12); };\nconst rid = __uuid();\nconst tid = __uuid();\nreturn [{ json: { procurement_id: rid, trace_id: tid, requirement: b.requirement, quantity: b.quantity ?? null, budget: b.budget ?? null, currency: b.currency, delivery_requirement: b.delivery_requirement ?? null, mandatory_specs: b.mandatory_specs ?? {}, preferred_specs: b.preferred_specs ?? {}, weights: b.weights ?? {}, spec_fields: b.spec_fields ?? ['processor','ram','storage','operating_system','display','battery','graphics'], requested_by: b.requested_by ?? null, auto_close_on_proceed: b.auto_close_on_proceed === true, mode: (b.mode === 'DEMO' ? 'DEMO' : 'REAL'), demo_reason: (b.mode === 'DEMO' ? String(b.demo_reason || '') : null) } }];"
+      },
+      "id": "or-intake",
+      "name": "Validate Intake",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap intake into a state-manager op envelope.\nconst i = $input.first().json;\nreturn [{ json: { operation: 'create_case', payload: i } }];"
+      },
+      "id": "or-wrap-create",
+      "name": "Op Create Case",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-create",
+      "name": "Create Case",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "10-agent-product-research",
+        "mode": "each"
+      },
+      "id": "or-product",
+      "name": "Call Product Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1000,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.data_status }}",
+              "rightValue": "UNAVAILABLE",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-pcheck",
+      "name": "Products Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap product output into insert_products op.\nconst intake = $('Validate Intake').first().json;\nconst out = $input.first().json;\nreturn [{ json: { operation: 'insert_products', payload: { procurement_id: intake.procurement_id, products: out.products ?? [] } } }];"
+      },
+      "id": "or-wrap-products",
+      "name": "Op Persist Products",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-savep",
+      "name": "Persist Products",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "20-agent-vendor-research",
+        "mode": "each"
+      },
+      "id": "or-vendor",
+      "name": "Call Vendor Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap vendor output into insert_offers op (empty offers allowed -> PARTIAL continues).\nconst intake = $('Validate Intake').first().json;\nconst out = $('Call Vendor Agent').first().json;\nreturn [{ json: { operation: 'insert_offers', payload: { procurement_id: intake.procurement_id, offers: out.offers ?? [] }, _passthrough_offers: out.offers ?? [] } }];"
+      },
+      "id": "or-wrap-offers",
+      "name": "Op Persist Offers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-saveo",
+      "name": "Persist Offers",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Review&Quality input from verified products (+ offers if any). No LLM here.\nconst intake = $('Validate Intake').first().json;\nconst products = $('Call Product Agent').first().json.products ?? [];\nconst offers = $('Call Vendor Agent').first().json.offers ?? [];\nreturn [{ json: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, products, offers, spec_fields: intake.spec_fields } }];"
+      },
+      "id": "or-reviewin",
+      "name": "Build Review Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "40-agent-review-quality",
+        "mode": "each"
+      },
+      "id": "or-review",
+      "name": "Call Review Agent",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap evaluations into insert op + ensure scoring config exists for comparison.\nconst intake = $('Validate Intake').first().json;\nconst out = $input.first().json;\nreturn [{ json: { operation: 'insert_quality_evaluations', payload: { procurement_id: intake.procurement_id, evaluations: out.evaluations ?? [] } } }];"
+      },
+      "id": "or-wrap-quality",
+      "name": "Op Persist Quality",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-saveq",
+      "name": "Persist Quality",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        3000,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Upsert scoring config (procurement weights override defaults; never inside LLM prompts).\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'upsert_scoring_config', payload: { procurement_id: intake.procurement_id, weights: intake.weights, spec_fields: intake.spec_fields, notes: 'Phase 2A defaults; override via procurement weights' } } }];"
+      },
+      "id": "or-wrap-config",
+      "name": "Op Scoring Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-savec",
+      "name": "Ensure Scoring Config",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        3400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark quality_done (never compared until comparison completes).\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'quality_done' } } }];"
+      },
+      "id": "or-wrap-qdone",
+      "name": "Op Quality Done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-qdone",
+      "name": "Mark Quality Done",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        3800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build comparison input: products + evaluations + offers + weights. No scoring here.\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, currency: intake.currency, budget: intake.budget, products: $('Call Product Agent').first().json.products ?? [], evaluations: $('Call Review Agent').first().json.evaluations ?? [], offers: $('Call Vendor Agent').first().json.offers ?? [], weights: intake.weights } }];"
+      },
+      "id": "or-compin",
+      "name": "Build Comparison Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4000,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "50-agent-comparison",
+        "mode": "each"
+      },
+      "id": "or-compare",
+      "name": "Call Comparison",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        4200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap ranked comparisons into insert op.\nconst intake = $('Validate Intake').first().json;\nconst out = $input.first().json;\nreturn [{ json: { operation: 'insert_comparisons', payload: { procurement_id: intake.procurement_id, comparisons: out.comparisons ?? [] } } }];"
+      },
+      "id": "or-wrap-comp",
+      "name": "Op Persist Comparisons",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-savecomp",
+      "name": "Persist Comparisons",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        4600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark compared ONLY after deterministic comparison persisted.\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'compared' } } }];"
+      },
+      "id": "or-wrap-compared",
+      "name": "Op Compared",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-compared",
+      "name": "Mark Compared",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        5000,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "93-util-logger",
+        "mode": "each"
+      },
+      "id": "or-audit",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        5200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ procurement_id: $('Validate Intake').first().json.procurement_id, note: 'Phase 2B ends after decision/negotiation-prep.' }) }}"
+      },
+      "id": "or-respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build decision input: ranked comparisons + products + offers + procurement constraints. No scoring here.\nconst intake = $('Validate Intake').first().json;\nconst conv = (specs) => { const m = {}; for (const [k, v] of Object.entries(intake.mandatory_specs ?? {})) { const s = String(k); if (s.endsWith('_min')) m[s.slice(0, -4)] = { min: v }; else if (s.endsWith('_max')) m[s.slice(0, -4)] = { ...(m[s.slice(0, -4)] || {}), max: v }; else m[s] = { equals: v }; } return m; };\nreturn [{ json: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, procurement: { procurement_id: intake.procurement_id, currency: intake.currency, budget: intake.budget, quantity: intake.quantity }, ranked: $('Call Comparison').first().json.comparisons ?? [], offersByProduct: {}, vendorsById: {}, productsById: Object.fromEntries(($('Call Product Agent').first().json.products ?? []).map((p) => [p.product_id, p])), mandatory: conv() } }];"
+      },
+      "id": "or-decisionin",
+      "name": "Build Decision Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "65-agent-decision",
+        "mode": "each"
+      },
+      "id": "or-decision",
+      "name": "Call Decision",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        5800,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap decision into insert_decisions op.\nconst intake = $('Validate Intake').first().json;\nconst d = $input.first().json;\nreturn [{ json: { operation: 'insert_decisions', payload: { procurement_id: intake.procurement_id, decisions: [d] } } }];"
+      },
+      "id": "or-wrap-decision",
+      "name": "Op Persist Decision",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6000,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-saved",
+      "name": "Persist Decision",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        6200,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark decided. State changes stop here for non-negotiated outcomes.\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'decided' } } }];"
+      },
+      "id": "or-wrap-decided",
+      "name": "Op Decided",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6400,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-decided",
+      "name": "Mark Decided",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        6600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Call Decision').first().json.decision }}",
+              "rightValue": "NEGOTIATE",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-negq",
+      "name": "Negotiate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        6800,
+        220
+      ],
+      "notes": "Reads the persisted decision output (Execute nodes return pg results, so conditions reference agent nodes explicitly). Only NEGOTIATE enters negotiation."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build negotiation input from the decision's verified offer (+ vendor/product lookups). Empty vendor/offer -> agent returns NOT_READY.\nconst intake = $('Validate Intake').first().json;\nconst d = $('Call Decision').first().json;\nconst offers = $('Call Vendor Agent').first().json.offers ?? [];\nconst off = (d._offer && offers.find((o) => o.offer_id === d._offer.offer_id)) || null;\nreturn [{ json: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, decision: d, vendor: null, offer: off, product: null, procurement: { currency: intake.currency, budget: intake.budget, quantity: intake.quantity }, allowed_discount_pct: null, requested_terms: [] } }];"
+      },
+      "id": "or-negin",
+      "name": "Build Negotiation Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7000,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "70-agent-negotiation",
+        "mode": "each"
+      },
+      "id": "or-neg",
+      "name": "Call Negotiation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap: eligible -> insert_negotiations + human_review_required event; NOT_READY -> evaluated_not_ready event only (no fake rows).\nconst intake = $('Validate Intake').first().json;\nconst r = $input.first().json;\nif (r.status === 'NOT_READY') return [{ json: { operation: 'insert_negotiation_events', payload: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, events: [{ offer_id: null, event_type: 'evaluated_not_ready', metadata: { reasons: r.reasons } }] } } }];\nreturn [{ json: { operation: 'insert_negotiations', payload: { procurement_id: intake.procurement_id, negotiations: [{ ...r.negotiation, message: r.message }] } } }];"
+      },
+      "id": "or-wrap-neg",
+      "name": "Op Persist Negotiation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7400,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-saveneg",
+      "name": "Persist Negotiation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7600,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Call Negotiation').first().json.status }}",
+              "rightValue": "READY_FOR_HUMAN_REVIEW",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-negopen",
+      "name": "Negotiation Open?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7800,
+        120
+      ],
+      "notes": "decided -> negotiating ONLY when a real negotiation opened. Otherwise no transition."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark negotiating (real negotiation row exists).\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'negotiating' } } }];"
+      },
+      "id": "or-wrap-negotiating",
+      "name": "Op Negotiating",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8000,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-negotiating",
+      "name": "Mark Negotiating",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        8200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "path": "vendor-response",
+        "responseMode": "responseNode",
+        "options": {},
+        "httpMethod": "POST"
+      },
+      "id": "or-vrwebhook",
+      "name": "Vendor Response Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        560
+      ],
+      "webhookId": "buywise-vendor-response",
+      "notes": "Async entry for REAL vendor responses (email/API/portal payloads). No response -> no reevaluation, case stays negotiating. Never synthesize."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap snapshot read for the reevaluation path.\nconst body = ($input.first().json?.body ?? $input.first().json);\nreturn [{ json: { operation: 'fetch_snapshot', payload: { procurement_id: body.procurement_id }, _vendor_response: body.vendor_response ?? null, _trace_id: body.trace_id ?? null } }];"
+      },
+      "id": "or-wrapsnapreeval",
+      "name": "Op Fetch Reeval Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6000,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-snapreeval",
+      "name": "Fetch Reeval Snapshot",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        6100,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shape reevaluation input from snapshot + real response. Components rebuilt from persisted breakdown scores.\nconst snap = $input.first().json.snapshot ?? $input.first().json;\nconst prev = $('Op Fetch Reeval Snapshot').first().json;\nconst body_response = prev._vendor_response;\nconst nego = (snap.negotiations || []).find((n) => n.negotiation_id === (body_response && body_response.negotiation_id)) || (snap.negotiations || [])[0] || null;\nif (!nego) return [{ json: { procurement_id: snap.procurement.procurement_id, negotiation: null, vendor_response: null } }];\nconst comp0 = (snap.comparisons || []).find((c) => c.product_id === nego.product_id) || {};\nconst bd0 = comp0.criteria_scores || {};\nconst compMap = Object.fromEntries(Object.entries(bd0).map(([k, v]) => [k, (v && typeof v.score === 'number') ? v.score : null]));\nconst offer0 = (snap.offers || []).find((o) => o.offer_id === nego.offer_id) || null;\nreturn [{ json: { procurement_id: snap.procurement.procurement_id, trace_id: prev._trace_id, negotiation: nego, offer: offer0, vendor: (snap.vendors || []).find((v) => v.vendor_id === nego.vendor_id) || null, product: (snap.products || []).find((p) => p.product_id === nego.product_id) || null, vendor_response: body_response, original: { components: compMap, price: (offer0 && offer0.net_price) || nego.current_price || null, currency: (offer0 && offer0.currency) || nego.currency || null, budget: (snap.procurement && snap.procurement.budget) || null }, weights: {} } }];"
+      },
+      "id": "or-reevalin",
+      "name": "Build Reevaluation Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6200,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "80-agent-reevaluation",
+        "mode": "each"
+      },
+      "id": "or-reeval",
+      "name": "Call Reevaluation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        6400,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "REEVALUATED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-reevalq",
+      "name": "Reevaluated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        6600,
+        560
+      ],
+      "notes": "WAITING_FOR_VENDOR / NOT_ELIGIBLE / REJECTED stay negotiating. No transition without verified recomputation."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap reevaluation into insert op.\nconst out = $input.first().json;\nreturn [{ json: { operation: 'insert_reevaluations', payload: { procurement_id: out.procurement_id, reevaluations: [out] } } }];"
+      },
+      "id": "or-wrap-reeval",
+      "name": "Op Persist Reevaluation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6800,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-savereeval",
+      "name": "Persist Reevaluation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7000,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark reevaluated ONLY after verified recomputation persisted.\nconst out = $('Call Reevaluation').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: out.procurement_id, status: 'reevaluated' } } }];"
+      },
+      "id": "or-wrap-reevaluated",
+      "name": "Op Reevaluated",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7200,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-reevaluated",
+      "name": "Mark Reevaluated",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7400,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Minimal approval base from either path (post-negotiation or PROCEED-direct). Snapshot loaded next.\nconst src = $('Mark Reevaluated').first().json?.procurement_id ? $('Call Reevaluation').first().json : $('Call Decision').first().json;\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { procurement_id: src.procurement_id ?? intake.procurement_id, trace_id: intake.trace_id } }];"
+      },
+      "id": "or-apprbase",
+      "name": "Build Approval Base",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7600,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap snapshot read.\nconst i = $input.first().json;\nreturn [{ json: { operation: 'fetch_snapshot', payload: { procurement_id: i.procurement_id } } }];"
+      },
+      "id": "or-wrapsnap",
+      "name": "Op Fetch Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7800,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-snapshot",
+      "name": "Fetch Snapshot",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        8000,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shape full approval input from the authoritative snapshot. Gaps stay unavailable.\nconst snap = $input.first().json.snapshot ?? $input.first().json;\nconst dec = snap.decision || {};\nconst ranked = snap.comparisons || [];\nconst top = ranked[0] || {};\nconst offers = snap.offers || [];\nconst best = offers.find((o) => o.offer_id === (dec._offer?.offer_id ?? dec.product_id)) || offers[0] || null;\nconst re = (snap.reevaluations || [])[0] || null;\nconst nego = (snap.negotiations || [])[0] || null;\nconst prod = (snap.products || []).find((p) => p.product_id === (dec.product_id || top.product_id)) || null;\nreturn [{ json: { procurement_id: snap.procurement.procurement_id, trace_id: $('Build Approval Base').first().json.trace_id, snapshot: snap.procurement, selected_product: prod ?? 'unavailable', selected_vendor: ((snap.vendors || []).find((v) => v.vendor_id === (best?.vendor_id || nego?.vendor_id)) ?? 'unavailable'), original_offer: best ?? 'unavailable', revised_offer: re ? { revised_price: re.revised_price, currency: re.currency, absolute_savings: re.absolute_savings, percentage_savings: re.percentage_savings } : 'unavailable', original_score: top.overall_score ?? 'unavailable', revised_score: re ? re.revised_score : 'unavailable', savings: re ? { absolute: re.absolute_savings, percentage: re.percentage_savings, currency: re.currency } : 'unavailable', quality_evidence: 'unavailable', review_evidence: 'unavailable', delivery_information: best?.delivery_days ?? 'unavailable', warranty_information: best?.warranty_months ?? 'unavailable', payment_terms: best?.payment_terms ?? 'unavailable', criteria_used: top.criteria_used ?? [], criteria_missing: top.criteria_missing ?? [], limitations: (top.limitations ?? []).concat(dec.decision ? ['Decision: ' + dec.decision + ' — ' + (dec.decision_reason ?? '')] : []), evidence_urls: top.evidence_urls ?? [], negotiation_history: snap.negotiations || [], expires_at: null } }];"
+      },
+      "id": "or-shapeappr",
+      "name": "Shape Approval Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8200,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-agent-approval",
+        "mode": "each"
+      },
+      "id": "or-approval",
+      "name": "Call Approval (waits for human)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        8400,
+        460
+      ],
+      "notes": "Pauses at the HITL Wait node until an explicit human decision arrives. Never auto-resolves."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Record the human outcome: returns the update_approval envelope and carries the outcome event envelope + outcome for downstream nodes.\nconst intake = $('Validate Intake').first().json;\nconst o = $('Call Approval (waits for human)').first().json;\nconst ev = o.outcome === 'APPROVED' ? 'approval_approved' : o.outcome === 'REJECTED' ? 'approval_rejected' : 'approval_changes_requested';\nreturn [{ json: { operation: 'update_approval', payload: { procurement_id: intake.procurement_id, decision: o.outcome, approved_by: o.approved_by, approved_at: o.approved_at, decision_reason: o.decision_reason ?? null }, _event: { operation: 'insert_approval_events', payload: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, events: [{ event_type: ev, actor: o.approved_by, metadata: { outcome: o.outcome } }] } } } }];"
+      },
+      "id": "or-wrap-outcome",
+      "name": "Op Record Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8600,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-record",
+      "name": "Record Outcome",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        8800,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through the carried outcome-event envelope.\nconst w = $('Op Record Approval').first().json;\nreturn [{ json: w._event }];"
+      },
+      "id": "or-wrap-event",
+      "name": "Op Outcome Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9000,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-logevent",
+      "name": "Log Outcome Event",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        9200,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Call Approval (waits for human)').first().json.outcome }}",
+                    "rightValue": "APPROVED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approved"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Call Approval (waits for human)').first().json.outcome }}",
+                    "rightValue": "REJECTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "rejected"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Call Approval (waits for human)').first().json.outcome }}",
+                    "rightValue": "CHANGES_REQUESTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "changes"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "waiting"
+        }
+      },
+      "id": "or-outcome",
+      "name": "Outcome?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        9400,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark closed ONLY on explicit APPROVED/REJECTED.\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'closed' } } }];"
+      },
+      "id": "or-wrap-close",
+      "name": "Op Close",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9600,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-close",
+      "name": "Mark Closed",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        9800,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// CHANGES_REQUESTED never closes.\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'changes_requested' } } }];"
+      },
+      "id": "or-wrap-changes",
+      "name": "Op Changes Requested",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9600,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-changes",
+      "name": "Mark Changes Requested",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        9800,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Call Decision').first().json.decision }}",
+              "rightValue": "PROCEED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-proceedq",
+      "name": "Proceed Path?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7000,
+        560
+      ],
+      "notes": "INSUFFICIENT_DATA ends at decided (audit only). PROCEED goes to approval unless the explicit auto-close rule applies."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $('Validate Intake').first().json.auto_close_on_proceed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "isEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-autocloseq",
+      "name": "Auto-close?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        7200,
+        560
+      ],
+      "notes": "decided -> closed ONLY under the explicit PROCEED business rule (default false). Recorded in audit."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Legitimate early closure: PROCEED + explicit rule. No approval required by rule; rule recorded in audit metadata downstream.\nconst intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'closed' } } }];"
+      },
+      "id": "or-wrap-earlyclose",
+      "name": "Op Early Close",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7400,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-earlyclose",
+      "name": "Early Close Decided",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7600,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create the PENDING approval row (mode-aware) from the shaped input. No decision here.\nconst s = $input.first().json;\nconst pid = (o) => (o && typeof o === 'object' ? (o.product_id ?? o.vendor_id ?? o.offer_id ?? null) : null);\nreturn [{ json: { operation: 'insert_approvals', payload: { procurement_id: s.procurement_id, approvals: [{ selected_product_id: pid(s.selected_product), selected_vendor_id: (s.selected_vendor && s.selected_vendor.vendor_id) || null, selected_offer_id: (s.original_offer && s.original_offer.offer_id) || null, mode: (s.snapshot && s.snapshot.procurement && s.snapshot.procurement.mode) || 'REAL', status: 'PENDING_APPROVAL', approval_package: s }] } } }];"
+      },
+      "id": "or-wrap-createappr",
+      "name": "Op Create Approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8300,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-createappr",
+      "name": "Create Approval",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        8350,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Record approval_created (system actor — not a human decision).\nconst intake = $('Validate Intake').first().json;\nconst pid = $('Build Approval Base').first().json.procurement_id;\nreturn [{ json: { operation: 'insert_approval_events', payload: { procurement_id: pid, trace_id: intake.trace_id, events: [{ event_type: 'approval_created', actor: 'system', metadata: { mode: 'see-approvals-table' } }] } } }];"
+      },
+      "id": "or-wrap-createdev",
+      "name": "Op Approval Created Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8400,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-createdev",
+      "name": "Log Approval Created",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        8450,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "path": "demo-negotiation",
+        "responseMode": "responseNode",
+        "options": {},
+        "httpMethod": "POST"
+      },
+      "id": "or-demowebhook",
+      "name": "Demo Negotiation Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        5600,
+        720
+      ],
+      "webhookId": "buywise-demo-negotiation",
+      "notes": "DEMO entry: body {procurement_id, offer_id, mode:'DEMO', reason, target_price?}. REAL flow untouched. NOTHING is sent to any vendor from any branch below."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Wrap snapshot read for the demo path (carries the explicit DEMO request).\nconst body = ($input.first().json?.body ?? $input.first().json);\nreturn [{ json: { operation: 'fetch_snapshot', payload: { procurement_id: body.procurement_id }, _demo: { offer_id: body.offer_id ?? null, mode: body.mode ?? null, reason: body.reason ?? null, target_price: body.target_price ?? null } } }];"
+      },
+      "id": "or-wrapsnapdemo",
+      "name": "Op Fetch Demo Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5800,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-snapdemo",
+      "name": "Fetch Demo Snapshot",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        6000,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build an explicitly-DEMO negotiation from REAL offer/vendor/product rows. Mode switch requires reason.\nconst snap = $input.first().json.snapshot ?? $input.first().json;\nconst req = $('Op Fetch Demo Snapshot').first().json._demo || {};\nif (req.mode !== 'DEMO') throw new Error('demo path requires explicit mode=DEMO (never silent)');\nif (!req.reason || !String(req.reason).trim()) throw new Error('explicit DEMO selection requires a reason');\nif (!req.offer_id) throw new Error('demo negotiation requires a real offer_id');\nconst offer = (snap.offers || []).find((o) => o.offer_id === req.offer_id);\nif (!offer || !(typeof offer.net_price === 'number') || !offer.currency) throw new Error('demo requires a real verified offer (price+currency)');\nconst vendor = (snap.vendors || []).find((v) => v.vendor_id === offer.vendor_id);\nif (!vendor || !vendor.vendor_name || vendor.vendor_name === 'unavailable') throw new Error('demo requires a real vendor');\nconst product = (snap.products || []).find((p) => p.product_id === offer.product_id) || null;\nconst unitBudget = snap.procurement?.budget && snap.procurement?.quantity ? snap.procurement.budget / snap.procurement.quantity : null;\nconst target = (typeof req.target_price === 'number' && req.target_price > 0) ? req.target_price : (unitBudget !== null && unitBudget < offer.net_price ? unitBudget : null);\nconst dtrace = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('demo-' + Date.now());\nreturn [{ json: { procurement_id: snap.procurement.procurement_id, trace_id: dtrace, mode: 'DEMO', reason: req.reason, offer, vendor, product, target_price: target, status: 'DEMO_READY_FOR_RESPONSE' } }];"
+      },
+      "id": "or-builddemo",
+      "name": "Build Demo Negotiation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6200,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Switch case to DEMO (explicit + reasoned). REAL cases never pass here.\nconst d = $input.first().json;\nreturn [{ json: { operation: 'set_case_mode', payload: { procurement_id: d.procurement_id, mode: 'DEMO', reason: d.reason } } }];"
+      },
+      "id": "or-wrapsetmode",
+      "name": "Op Set Demo Mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6400,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-setmode",
+      "name": "Set Demo Mode",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        6600,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Persist the DEMO negotiation (real FKs, DEMO labels, never sent).\nconst d = $('Build Demo Negotiation').first().json;\nconst o = d.offer;\nconst discount = d.target_price !== null ? Math.round((1 - d.target_price / o.net_price) * 10000) / 100 : null;\nreturn [{ json: { operation: 'insert_negotiations', payload: { procurement_id: d.procurement_id, negotiations: [{ product_id: o.product_id, vendor_id: o.vendor_id, offer_id: o.offer_id, mode: 'DEMO', status: 'DEMO_READY_FOR_RESPONSE', current_price: o.net_price, currency: o.currency, target_price: d.target_price, requested_discount_percent: discount, requested_terms: [], contact_channel: { type: 'other', address: 'LOCAL_DEMO_ONLY', source_url: o.source_url, status: 'LIVE' }, human_confirmation: false, do_not_send: true }] } } }];"
+      },
+      "id": "or-wrapdemopersist",
+      "name": "Op Persist Demo Negotiation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6800,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-persistdemo",
+      "name": "Persist Demo Negotiation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7000,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Record demo_mode_selected + demo_negotiation_created (system actor).\nconst d = $('Build Demo Negotiation').first().json;\nconst intake = { trace_id: d.trace_id };\nreturn [{ json: { operation: 'insert_negotiation_events', payload: { procurement_id: d.procurement_id, trace_id: d.trace_id, events: [{ offer_id: d.offer.offer_id, event_type: 'demo_mode_selected', metadata: { mode: 'DEMO', reason: d.reason, actor: 'HUMAN' } }, { offer_id: d.offer.offer_id, event_type: 'demo_negotiation_created', metadata: { mode: 'DEMO', no_message_sent: true, actor: 'HUMAN' } }] } } }];"
+      },
+      "id": "or-wrapdemoev",
+      "name": "Op Demo Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7200,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-demoev",
+      "name": "Log Demo Events",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7400,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Mark demo_negotiating (never negotiating: no real channel).\nconst d = $('Build Demo Negotiation').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: d.procurement_id, status: 'demo_negotiating' } } }];"
+      },
+      "id": "or-wrapdemostatus",
+      "name": "Op Demo Negotiating",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7600,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-demostatus",
+      "name": "Mark Demo Negotiating",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        7800,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shape Product Agent input from the validated intake (pg result carries no requirement data).\nconst i = $('Validate Intake').first().json;\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, requirement: i.requirement, quantity: i.quantity, budget: i.budget, currency: i.currency, delivery_requirement: i.delivery_requirement, mandatory_specs: i.mandatory_specs, preferred_specs: i.preferred_specs } }];"
+      },
+      "id": "or-prodin",
+      "name": "Build Product Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shape Vendor Agent input: verified products + case currency (pg result carries neither).\nconst intake = $('Validate Intake').first().json;\nconst products = $('Call Product Agent').first().json.products ?? [];\nreturn [{ json: { procurement_id: intake.procurement_id, trace_id: intake.trace_id, currency: intake.currency, products } }];"
+      },
+      "id": "or-vendorin",
+      "name": "Build Vendor Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const intake = $('Validate Intake').first().json;\nconst vendors = $('Call Vendor Agent').first().json.vendors ?? [];\nreturn [{ json: { operation: 'insert_vendors', payload: { procurement_id: intake.procurement_id, vendors } } }];"
+      },
+      "id": "or-wrap-vendors",
+      "name": "Op Persist Vendors",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-savev",
+      "name": "Persist Vendors",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2100,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.data_status }}",
+              "rightValue": "UNAVAILABLE",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "or-ocheck",
+      "name": "Offers Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1900,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const intake = $('Validate Intake').first().json;\nreturn [{ json: { operation: 'update_status', payload: { procurement_id: intake.procurement_id, status: 'partial' } } }];"
+      },
+      "id": "or-wrap-partial",
+      "name": "Op Partial Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "90-util-state-manager",
+        "mode": "each"
+      },
+      "id": "or-partial",
+      "name": "Mark Partial",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        2300,
+        320
+      ]
+    }
+  ],
+  "connections": {
+    "Procurement Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Intake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Intake": {
+      "main": [
+        [
+          {
+            "node": "Op Create Case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Create Case": {
+      "main": [
+        [
+          {
+            "node": "Create Case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Case": {
+      "main": [
+        [
+          {
+            "node": "Build Product Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Product Agent": {
+      "main": [
+        [
+          {
+            "node": "Products Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Products Found?": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Op Persist Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Products": {
+      "main": [
+        [
+          {
+            "node": "Persist Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Products": {
+      "main": [
+        [
+          {
+            "node": "Build Vendor Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Vendor Agent": {
+      "main": [
+        [
+          {
+            "node": "Offers Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Offers": {
+      "main": [
+        [
+          {
+            "node": "Persist Offers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Offers": {
+      "main": [
+        [
+          {
+            "node": "Build Review Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Review Input": {
+      "main": [
+        [
+          {
+            "node": "Call Review Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Review Agent": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Quality",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Quality": {
+      "main": [
+        [
+          {
+            "node": "Persist Quality",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Quality": {
+      "main": [
+        [
+          {
+            "node": "Op Scoring Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Scoring Config": {
+      "main": [
+        [
+          {
+            "node": "Ensure Scoring Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure Scoring Config": {
+      "main": [
+        [
+          {
+            "node": "Op Quality Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Quality Done": {
+      "main": [
+        [
+          {
+            "node": "Mark Quality Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Quality Done": {
+      "main": [
+        [
+          {
+            "node": "Build Comparison Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Comparison Input": {
+      "main": [
+        [
+          {
+            "node": "Call Comparison",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Comparison": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Comparisons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Comparisons": {
+      "main": [
+        [
+          {
+            "node": "Persist Comparisons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Comparisons": {
+      "main": [
+        [
+          {
+            "node": "Op Compared",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Compared": {
+      "main": [
+        [
+          {
+            "node": "Mark Compared",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Compared": {
+      "main": [
+        [
+          {
+            "node": "Build Decision Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Decision Input": {
+      "main": [
+        [
+          {
+            "node": "Call Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Decision": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Decision": {
+      "main": [
+        [
+          {
+            "node": "Persist Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Decision": {
+      "main": [
+        [
+          {
+            "node": "Op Decided",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Decided": {
+      "main": [
+        [
+          {
+            "node": "Mark Decided",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Decided": {
+      "main": [
+        [
+          {
+            "node": "Negotiate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Negotiate?": {
+      "main": [
+        [
+          {
+            "node": "Build Negotiation Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Proceed Path?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proceed Path?": {
+      "main": [
+        [
+          {
+            "node": "Auto-close?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-close?": {
+      "main": [
+        [
+          {
+            "node": "Op Early Close",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Approval Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Early Close": {
+      "main": [
+        [
+          {
+            "node": "Early Close Decided",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Early Close Decided": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vendor Response Webhook": {
+      "main": [
+        [
+          {
+            "node": "Op Fetch Reeval Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Fetch Reeval Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Fetch Reeval Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Reeval Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Build Reevaluation Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reevaluation Input": {
+      "main": [
+        [
+          {
+            "node": "Call Reevaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Reevaluation": {
+      "main": [
+        [
+          {
+            "node": "Reevaluated?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reevaluated?": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Reevaluation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Reevaluation": {
+      "main": [
+        [
+          {
+            "node": "Persist Reevaluation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Reevaluation": {
+      "main": [
+        [
+          {
+            "node": "Op Reevaluated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Reevaluated": {
+      "main": [
+        [
+          {
+            "node": "Mark Reevaluated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reevaluated": {
+      "main": [
+        [
+          {
+            "node": "Build Approval Base",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Approval Base": {
+      "main": [
+        [
+          {
+            "node": "Op Fetch Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Fetch Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Fetch Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Shape Approval Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Approval Input": {
+      "main": [
+        [
+          {
+            "node": "Op Create Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Create Approval": {
+      "main": [
+        [
+          {
+            "node": "Create Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Approval": {
+      "main": [
+        [
+          {
+            "node": "Op Approval Created Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Approval Created Event": {
+      "main": [
+        [
+          {
+            "node": "Log Approval Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Approval Created": {
+      "main": [
+        [
+          {
+            "node": "Call Approval (waits for human)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Approval (waits for human)": {
+      "main": [
+        [
+          {
+            "node": "Op Record Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Record Approval": {
+      "main": [
+        [
+          {
+            "node": "Record Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Outcome": {
+      "main": [
+        [
+          {
+            "node": "Op Outcome Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Outcome Event": {
+      "main": [
+        [
+          {
+            "node": "Log Outcome Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Outcome Event": {
+      "main": [
+        [
+          {
+            "node": "Outcome?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Outcome?": {
+      "main": [
+        [
+          {
+            "node": "Op Close",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Op Close",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Op Changes Requested",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Close": {
+      "main": [
+        [
+          {
+            "node": "Mark Closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Closed": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Changes Requested": {
+      "main": [
+        [
+          {
+            "node": "Mark Changes Requested",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Changes Requested": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Negotiation Input": {
+      "main": [
+        [
+          {
+            "node": "Call Negotiation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Negotiation": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Negotiation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Negotiation": {
+      "main": [
+        [
+          {
+            "node": "Persist Negotiation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Negotiation": {
+      "main": [
+        [
+          {
+            "node": "Negotiation Open?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Negotiation Open?": {
+      "main": [
+        [
+          {
+            "node": "Op Negotiating",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Negotiating": {
+      "main": [
+        [
+          {
+            "node": "Mark Negotiating",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Negotiating": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Demo Negotiation Webhook": {
+      "main": [
+        [
+          {
+            "node": "Op Fetch Demo Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Fetch Demo Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Fetch Demo Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Demo Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Build Demo Negotiation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Demo Negotiation": {
+      "main": [
+        [
+          {
+            "node": "Op Set Demo Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Set Demo Mode": {
+      "main": [
+        [
+          {
+            "node": "Set Demo Mode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Demo Mode": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Demo Negotiation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Demo Negotiation": {
+      "main": [
+        [
+          {
+            "node": "Persist Demo Negotiation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Demo Negotiation": {
+      "main": [
+        [
+          {
+            "node": "Op Demo Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Demo Events": {
+      "main": [
+        [
+          {
+            "node": "Log Demo Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Demo Events": {
+      "main": [
+        [
+          {
+            "node": "Op Demo Negotiating",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Demo Negotiating": {
+      "main": [
+        [
+          {
+            "node": "Mark Demo Negotiating",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Demo Negotiating": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Product Input": {
+      "main": [
+        [
+          {
+            "node": "Call Product Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Vendor Input": {
+      "main": [
+        [
+          {
+            "node": "Call Vendor Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Persist Vendors": {
+      "main": [
+        [
+          {
+            "node": "Persist Vendors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Vendors": {
+      "main": [
+        [
+          {
+            "node": "Op Persist Offers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Offers Found?": {
+      "main": [
+        [
+          {
+            "node": "Op Partial Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Op Persist Vendors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Op Partial Status": {
+      "main": [
+        [
+          {
+            "node": "Mark Partial",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Partial": {
+      "main": [
+        [
+          {
+            "node": "Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BuyWise — Intelligent Procurement, Evidence-Based Decisions</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101a30'/%3E%3Ctext x='16' y='23' font-size='18' font-weight='bold' text-anchor='middle' fill='white' font-family='Arial'%3EB%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" aria-label="Primary">
+    <div class="brand">BuyWise</div>
+    <div class="brand-sub">Procurement Console</div>
+    <nav id="nav">
+      <a href="#/" data-nav="">Dashboard</a>
+      <a href="#/new" data-nav="new">New Request</a>
+      <a href="#/requests" data-nav="requests">Requests</a>
+      <a href="#/approvals" data-nav="approvals">Approvals</a>
+      <a href="#/admin" data-nav="admin" id="nav-admin" style="display:none">Administration</a>
+    </nav>
+    <div class="side-foot">
+      <div id="user-chip" class="prov-mini"></div>
+      <div id="health" class="health" title="Backend + database status">checking…</div>
+      <div id="prov-mini" class="prov-mini"></div>
+      <div id="llm-mode" class="prov-mini" title="Reasoning mode"></div>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">Dashboard</h1>
+        <p id="page-sub" class="muted small"></p>
+      </div>
+      <div id="case-badge"></div>
+    </header>
+    <main id="app" tabindex="-1"><p class="muted">Loading…</p></main>
+    <footer>Product discovery is source-backed (provider listings with source URLs); prices, stock, specifications, delivery, warranty and seller terms appear only when independently verified, otherwise marked unavailable · vendors are never contacted automatically · human approval is always explicit</footer>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

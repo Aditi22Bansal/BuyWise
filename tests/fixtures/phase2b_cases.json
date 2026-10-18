@@ -1,0 +1,20 @@
+{
+  "_fixture_note": "TEST FIXTURE — NOT PRODUCTION DATA. Synthetic decision/negotiation cases for unit tests. Never LIVE, never inserted into PostgreSQL.",
+  "procurement": { "procurement_id": "00000000-0000-4000-8000-000000000001", "currency": "INR", "budget": 80000, "quantity": 1 },
+  "ranked_proceed": [
+    { "product_id": "p-good", "rank": 1, "overall_score": 0.82, "criteria_used": ["price", "source_quality"], "criteria_missing": [], "evidence_urls": ["https://shop.example/p1"] }
+  ],
+  "products_proceed": {
+    "p-good": { "product_id": "p-good", "specifications": { "ram_gb": 16, "storage_gb": 512 } }
+  },
+  "offers_proceed": {
+    "p-good": [{ "offer_id": "o-1", "product_id": "p-good", "vendor_id": "v-1", "net_price": 75000, "currency": "INR" }]
+  },
+  "vendors_proceed": {
+    "v-1": { "vendor_id": "v-1", "vendor_name": "Fixture Retail", "source_url": "https://shop.example/seller", "contact_channel": { "type": "email", "address": "sales@shop.example", "source_url": "https://shop.example/contact", "status": "LIVE" } }
+  },
+  "mandatory": { "ram_gb": { "min": 16 }, "storage_gb": { "min": 512 } },
+  "negotiation_vendor": { "vendor_id": "v-1", "vendor_name": "Fixture Retail", "source_url": "https://shop.example/seller", "contact_channel": { "type": "email", "address": "sales@shop.example", "source_url": "https://shop.example/contact", "status": "LIVE" } },
+  "negotiation_offer": { "offer_id": "o-1", "product_id": "p-good", "vendor_id": "v-1", "net_price": 85000, "currency": "INR" },
+  "negotiation_product": { "product_id": "p-good", "name": "Fixture Laptop 16GB", "evidence_urls": ["https://shop.example/p1"] }
+}

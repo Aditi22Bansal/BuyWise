@@ -1,0 +1,35 @@
+{
+  "_fixture_note": "TEST FIXTURE — NOT PRODUCTION DATA. Synthetic re-evaluation/approval cases for unit tests. Never LIVE, never inserted into PostgreSQL, never described as real vendor responses.",
+  "procurement_id": "00000000-0000-4000-8000-000000000002",
+  "negotiation": { "negotiation_id": "n-1", "procurement_id": "00000000-0000-4000-8000-000000000002", "product_id": "p-good", "vendor_id": "v-1", "offer_id": "o-1", "current_price": 85000, "currency": "INR" },
+  "offer": { "offer_id": "o-1", "product_id": "p-good", "vendor_id": "v-1", "net_price": 85000, "currency": "INR" },
+  "vendor": { "vendor_id": "v-1", "vendor_name": "Fixture Retail", "source_url": "https://shop.example/seller" },
+  "product": { "product_id": "p-good", "name": "Fixture Laptop 16GB", "evidence_urls": ["https://shop.example/p1"] },
+  "original": {
+    "components": { "price": 0.6, "source_quality": 0.9, "specification_completeness": 0.5, "budget_compliance": 0 },
+    "weights": { "price": 0.3, "source_quality": 0.3, "specification_completeness": 0.2, "budget_compliance": 0.2 },
+    "price": 85000, "currency": "INR", "budget": 80000
+  },
+  "response_ok": {
+    "vendor_id": "v-1", "offer_id": "o-1", "revised_price": 78000, "currency": "INR",
+    "received_at": "2026-10-08T12:00:00Z", "source": "vendor_email", "source_url": "https://mail.example/msg/1", "channel": "email"
+  },
+  "response_fx": {
+    "vendor_id": "v-1", "offer_id": "o-1", "revised_price": 950, "currency": "USD",
+    "received_at": "2026-10-08T12:00:00Z", "source": "vendor_email", "source_url": "https://mail.example/msg/2", "channel": "email"
+  },
+  "approval_package_ok": {
+    "procurement_id": "00000000-0000-4000-8000-000000000002",
+    "procurement_request": { "requirement": "Fixture laptops", "quantity": 1 },
+    "selected_product": { "product_id": "p-good" },
+    "selected_vendor": { "vendor_id": "v-1" },
+    "original_offer": { "offer_id": "o-1", "net_price": 85000 },
+    "revised_offer": { "revised_price": 78000 },
+    "original_score": 0.5, "revised_score": 0.7,
+    "savings": { "absolute": 7000 }, "quality_evidence": {}, "review_evidence": "unavailable",
+    "delivery_information": "unavailable", "warranty_information": "unavailable", "payment_terms": "unavailable",
+    "criteria_used": ["price"], "criteria_missing": [], "limitations": ["thin evidence"],
+    "evidence_urls": ["https://shop.example/p1"], "negotiation_history": [],
+    "status": "PENDING_APPROVAL"
+  }
+}

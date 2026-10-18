@@ -1,0 +1,123 @@
+{
+  "name": "50-agent-comparison",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "cp-trigger",
+      "name": "Agent Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate comparison input. Components built deterministically below; LLM never ranks.\nconst i = $input.first().json;\nif (!i.procurement_id) throw new Error('Missing procurement_id');\nif (!i.weights || typeof i.weights !== 'object') throw new Error('Missing weights config');\nreturn [{ json: { procurement_id: i.procurement_id, trace_id: i.trace_id, currency: i.currency ?? null, budget: i.budget ?? null, products: i.products ?? [], evaluations: i.evaluations ?? [], offers: i.offers ?? [], weights: i.weights } }];"
+      },
+      "id": "cp-validate",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build per-candidate components with deterministic normalizers ONLY.\n// No price evidence -> price null. Currency mismatch or no price -> budget null. No rating -> reviews/quality null.\nconst inp = $input.first().json;\nconst byId = Object.fromEntries(inp.evaluations.map((e) => [e.product_id, e]));\nconst offersByProduct = {};\nfor (const o of inp.offers) { (offersByProduct[o.product_id] = offersByProduct[o.product_id] || []).push(o); }\nconst normRating = (r, s) => (typeof r === 'number' && typeof s === 'number' && s > 0 && r >= 0 && r <= s) ? r / s : null;\nconst rows = inp.products.map((p) => {\n  const ev = byId[p.product_id] || {};\n  const offers = offersByProduct[p.product_id] || [];\n  const priced = offers.filter((o) => typeof o.net_price === 'number' && o.net_price > 0 && o.currency).map((o) => ({ price: o.net_price, currency: String(o.currency).toUpperCase() }));\n  const sameCur = inp.currency ? priced.filter((x) => x.currency === String(inp.currency).toUpperCase()) : [];\n  const best = sameCur.length ? Math.min(...sameCur.map((x) => x.price)) : null;\n  const comps = {\n    price: null, quality: null,\n    reviews: normRating(ev.review_rating, ev.review_scale ?? 5),\n    delivery: null, warranty: null, vendor_reliability: null, payment_terms: null,\n    budget_compliance: (best !== null && typeof inp.budget === 'number' && inp.budget > 0) ? (best <= inp.budget ? 1 : 0) : null,\n    source_quality: typeof ev.source_quality_score === 'number' ? ev.source_quality_score : null,\n    specification_completeness: typeof ev.specification_completeness === 'number' ? ev.specification_completeness : null,\n  };\n  if (comps.reviews !== null) comps.quality = comps.reviews;\n  const strengths = [], limitations = [];\n  if (ev.source_quality === 'HIGH') strengths.push('High-quality evidence source (' + (p.source_url || '') + ')');\n  else if (ev.source_quality) limitations.push('Source quality is ' + ev.source_quality + ' \u2014 treat as candidate, not verified product');\n  if ((ev.spec_fields_verified ?? 0) > 0) strengths.push(ev.spec_fields_verified + '/' + (ev.spec_fields_total ?? '?') + ' defined specifications verified');\n  else limitations.push('No defined specifications verifiable from source');\n  if (comps.reviews !== null) strengths.push('Verified review rating ' + ev.review_rating + '/' + (ev.review_scale ?? 5));\n  else limitations.push('Review data unavailable');\n  if (best === null) limitations.push(inp.currency && priced.length ? 'Price evidence exists but currency mismatch \u2014 no conversion without FX source' : 'Price comparison unavailable');\n  else if (comps.budget_compliance === 1) strengths.push('Best verified price within budget');\n  else limitations.push('Best verified price exceeds budget');\n  return { product_id: p.product_id, components: comps, strengths, limitations, evidence_urls: ev.source_urls ?? [p.source_url].filter(Boolean), confidence: p.confidence ?? 0 };\n});\n  return rows.map((r) => ({ json: { product_id: r.product_id, components: r.components, weights: inp.weights, _meta: { strengths: r.strengths, limitations: r.limitations, evidence_urls: r.evidence_urls, confidence: r.confidence } } }));"
+      },
+      "id": "cp-components",
+      "name": "Build Components",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": "60-util-scoring-engine",
+        "mode": "each"
+      },
+      "id": "cp-score",
+      "name": "Call Scoring Engine",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        340
+      ],
+      "notes": "Ranking comes from deterministic code here. This node loops per row: input {components, weights}."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge per-row engine scores with row metadata (joined on product_id, never position),\n// then rank deterministically (score desc, nulls last, confidence desc, product_id asc).\nconst scored = $input.all().map((i) => i.json);\nconst meta = {};\nfor (const m of $('Build Components').all().map((i) => i.json)) { meta[m.product_id] = m._meta; }\nconst merged = scored.map((s) => {\n  const m = meta[s.product_id] || { strengths: [], limitations: ['Row metadata unavailable'], evidence_urls: [], confidence: 0 };\n  return { product_id: s.product_id, overall_score: (typeof s.overall_score === 'number' ? s.overall_score : null), criteria_used: s.criteria_used ?? [], criteria_missing: s.criteria_missing ?? [], effective_weight_total: s.effective_weight_total ?? 0, criteria_scores: s.breakdown ?? {}, strengths: m.strengths, limitations: m.limitations, evidence_urls: m.evidence_urls, confidence: m.confidence };\n});\nmerged.sort((a, b) => {\n  if (a.overall_score === null && b.overall_score === null) {}\n  else if (a.overall_score === null) return 1;\n  else if (b.overall_score === null) return -1;\n  else if (b.overall_score !== a.overall_score) return b.overall_score - a.overall_score;\n  if ((b.confidence ?? 0) !== (a.confidence ?? 0)) return (b.confidence ?? 0) - (a.confidence ?? 0);\n  return String(a.product_id).localeCompare(String(b.product_id));\n});\nmerged.forEach((m, i) => { m.rank = i + 1; if (!m.evidence_urls.length) throw new Error('missing evidence_urls: ' + m.product_id); });\nreturn [{ json: { procurement_id: $('Validate Input').first().json.procurement_id, comparisons: merged } }];"
+      },
+      "id": "cp-rank",
+      "name": "Rank Deterministically",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        340
+      ]
+    }
+  ],
+  "connections": {
+    "Agent Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Build Components",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Components": {
+      "main": [
+        [
+          {
+            "node": "Call Scoring Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Scoring Engine": {
+      "main": [
+        [
+          {
+            "node": "Rank Deterministically",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

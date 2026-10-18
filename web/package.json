@@ -1,0 +1,18 @@
+{
+  "name": "buywise-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BuyWise local web frontend (dashboard + demo/approval UI over real Postgres/n8n data)",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
